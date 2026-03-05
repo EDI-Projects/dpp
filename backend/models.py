@@ -12,7 +12,11 @@ class W3CCredential(BaseModel):
 
 class MaterialSourcingRecord(BaseModel):
     product_id: str
+    raw_material_id: Optional[str] = None      # from MOCK_DATA CSV
     raw_material: str
+    supplier: Optional[str] = None             # from MOCK_DATA CSV
+    supplier_location: Optional[str] = None   # from MOCK_DATA CSV
+    cost_per_unit: Optional[float] = None     # from MOCK_DATA CSV
     material_grade: str
     quantity_kg: float
     origin_country: str

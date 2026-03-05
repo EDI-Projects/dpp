@@ -17,14 +17,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CSV_PATH = "../data/factory_data.csv"
+CSV_PATH       = "../data/factory_data.csv"
+MATERIALS_PATH = "../data/MOCK_DATA (3).csv"
 
 #later into db
 lifecycle_store: dict[str, list] = {}
 
+# Maps detected product category -> material descriptions in the CSV
+CATEGORY_MATERIAL_MAP: dict[str, list[str]] = {
+    "Apparel":             ["fabric", "leather"],
+    "Home Textiles":       ["fabric"],
+    "Footwear":            ["leather", "rubber"],
+    "Pharmaceuticals":     ["plastic", "glass", "paper"],
+    "Food & Agriculture":  ["paper", "plastic"],
+    "Industrial Materials":["metal", "glass", "concrete", "ceramic"],
+    "Automotive":          ["metal", "rubber", "plastic", "glass"],
+    "General Goods":       ["plastic", "wood", "paper", "fabric"],
+}
+
 def load_factories() -> pd.DataFrame:
     df = pd.read_csv(CSV_PATH)
     df.columns = df.columns.str.strip()
+    return df
+
+def load_materials() -> pd.DataFrame:
+    df = pd.read_csv(MATERIALS_PATH)
+    df.columns = df.columns.str.strip()
+    # normalise column name: 'cost per unit' -> 'cost_per_unit'
+    df.rename(columns={"cost per unit": "cost_per_unit"}, inplace=True)
     return df
 
 def detect_product_category(sector: str, product_type: str) -> str:
@@ -84,6 +104,38 @@ def make_vc(issuer_id: str, subject: dict, vc_type: str) -> dict:
     }
 
 """endpoints"""
+
+@app.get("/suggest-materials/{os_id}")
+def suggest_materials(os_id: str, limit: int = Query(5, ge=1, le=20)):
+    df_factories = load_factories()
+    row = df_factories[df_factories["os_id"] == os_id]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="Factory not found")
+
+    f        = row.fillna("").iloc[0].to_dict()
+    category = detect_product_category(
+        str(f.get("sector", "")),
+        str(f.get("product_type", ""))
+    )
+
+    material_types = CATEGORY_MATERIAL_MAP.get(category, ["fabric", "plastic"])
+
+    df_mat = load_materials()
+    mask   = df_mat["description"].str.lower().isin([m.lower() for m in material_types])
+    matches = df_mat[mask][["raw_material_id", "description", "supplier",
+    "supplier_location", "cost_per_unit"]]\
+    .head(limit)\
+    .fillna("")\
+    .to_dict(orient="records")
+
+    return {
+        "os_id":           os_id,
+        "factory_name":    f.get("name", ""),
+        "product_category":category,
+        "material_types":  material_types,
+        "suggestions":     matches
+    }
+
 
 @app.get("/factories")
 def list_factories(limit: int = Query(20, ge=1, le=200)):
