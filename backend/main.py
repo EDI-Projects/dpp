@@ -1,14 +1,44 @@
-from fastapi import FastAPI, HTTPException, Query
+"""
+Digital Product Passport — FastAPI backend
+
+Trust tiers:
+  Tier 0  Root authority (multi-sig HSM in production — future work)
+  Tier 1  Verified third parties: certifiers, recyclers, regulators
+  Tier 2  Dataset-anchored actors: factories, suppliers, logistics
+
+Future production architecture:
+  - Shamir's Secret Sharing key recovery for Tier 0 root
+  - HSM-backed key storage for all tiers
+  - National accreditation body API integration (Tier 1 approval)
+  - Full multi-sig threshold credentials
+  - IoT-verified trust signals (automated sensor attestation)
+  - On-chain audit log anchoring (Polygon CID registry)
+  - IPFS payload storage via Pinata
+  - PostgreSQL persistence + audit log table
+"""
+
+import json
+import uuid
+from datetime import datetime, timezone, date as date_type
+from pydantic import BaseModel
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Query, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import uuid
-from datetime import datetime, timezone
+
 from models import (
     MaterialSourcingRecord, CertificationRecord, CustodyTransfer,
-    OwnershipRecord, RepairRecord, EndOfLifeRecord
+    OwnershipRecord, RepairRecord, EndOfLifeRecord,
+)
+import actors as actors_module
+import status_list
+from actors import (
+    DEMO_CERTIFIER_DID, DEMO_RECYCLER_DID,
+    DEMO_SUPPLIER_DID, DEMO_LOGISTICS_DID,
 )
 
-app = FastAPI(title="Digital Product Passport API", version="1.0.0")
+app = FastAPI(title="Digital Product Passport API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,23 +47,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CSV_PATH       = "../data/factory_data.csv"
-MATERIALS_PATH = "../data/MOCK_DATA (3).csv"
 
-#later into db
-lifecycle_store: dict[str, list] = {}
+CSV_PATH        = "../data/factory_data.csv"
+MATERIALS_PATH  = "../data/MOCK_DATA (3).csv"
+PRODUCTION_PATH = "../data/y1AQEIpMTR2j7xgr9MH0_Manufacturing Dataset.csv"
 
-# Maps detected product category -> material descriptions in the CSV
+
+lifecycle_store: dict[str, list]   = {}   # product_id -> list of stage entries
+credential_index: dict[str, dict]  = {}   # credential_id -> stage entry
+factory_products: dict[str, list]  = {}   # os_id -> [product_ids]
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+_bearer = HTTPBearer(auto_error=False)
+
+def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)):
+    """Dependency: validate Bearer token issued by /admin/demo-token or /auth/verify."""
+    if not creds or not creds.credentials:
+        raise HTTPException(401, detail="Authentication required. "
+            "Get a token from POST /admin/demo-token.")
+    actor = actors_module.resolve_token(creds.credentials)
+    if not actor:
+        raise HTTPException(403, detail="Invalid or expired token.")
+    return actor
+
 CATEGORY_MATERIAL_MAP: dict[str, list[str]] = {
-    "Apparel":             ["fabric", "leather"],
-    "Home Textiles":       ["fabric"],
-    "Footwear":            ["leather", "rubber"],
-    "Pharmaceuticals":     ["plastic", "glass", "paper"],
-    "Food & Agriculture":  ["paper", "plastic"],
-    "Industrial Materials":["metal", "glass", "concrete", "ceramic"],
-    "Automotive":          ["metal", "rubber", "plastic", "glass"],
-    "General Goods":       ["plastic", "wood", "paper", "fabric"],
+    "Apparel":              ["fabric", "leather"],
+    "Home Textiles":        ["fabric"],
+    "Footwear":             ["leather", "rubber"],
+    "Pharmaceuticals":      ["plastic", "glass", "paper"],
+    "Food & Agriculture":   ["paper", "plastic"],
+    "Industrial Materials": ["metal", "glass", "concrete", "ceramic"],
+    "Automotive":           ["metal", "rubber", "plastic", "glass"],
+    "General Goods":        ["plastic", "wood", "paper", "fabric"],
 }
+
+CATEGORY_TO_PROD_TYPE: dict[str, str] = {
+    "Automotive":           "Automotive",
+    "Apparel":              "Textiles",
+    "Home Textiles":        "Textiles",
+    "Footwear":             "Textiles",
+    "General Goods":        "Appliances",
+    "Industrial Materials": "Electronics",
+    "Pharmaceuticals":      "Appliances",
+    "Food & Agriculture":   "Appliances",
+}
+
+FACTORY_CSV_FIELDS  = {"name", "address", "country_code", "country_name", "sector",
+                       "product_type", "facility_type", "lat", "lng"}
+MATERIAL_CSV_FIELDS = {"raw_material_id", "supplier", "supplier_location",
+                       "cost_per_unit", "description"}
+
+# ── CSV loaders ───────────────────────────────────────────────────────────────
 
 def load_factories() -> pd.DataFrame:
     df = pd.read_csv(CSV_PATH)
@@ -43,26 +107,48 @@ def load_factories() -> pd.DataFrame:
 def load_materials() -> pd.DataFrame:
     df = pd.read_csv(MATERIALS_PATH)
     df.columns = df.columns.str.strip()
-    # normalise column name: 'cost per unit' -> 'cost_per_unit'
     df.rename(columns={"cost per unit": "cost_per_unit"}, inplace=True)
     return df
 
+def load_production() -> pd.DataFrame:
+    df = pd.read_csv(PRODUCTION_PATH)
+    df.columns = df.columns.str.strip()
+    df.rename(columns={
+        "Production ID":             "production_id",
+        "Date":                      "date",
+        "Product Type":              "product_type",
+        "Machine ID":                "machine_id",
+        "Shift":                     "shift",
+        "Units Produced":            "units_produced",
+        "Defects":                   "defects",
+        "Production Time Hours":     "production_time_hours",
+        "Material Cost Per Unit":    "material_cost_per_unit",
+        "Labour Cost Per Hour":      "labour_cost_per_hour",
+        "Energy Consumption kWh":    "energy_consumption_kwh",
+        "Operator Count":            "operator_count",
+        "Maintenance Hours":         "maintenance_hours",
+        "Down time Hours":           "downtime_hours",
+        "Production Volume Cubic Meters": "production_volume_m3",
+        "Scrap Rate":                "scrap_rate",
+        "Rework Hours":              "rework_hours",
+        "Quality Checks Failed":     "quality_checks_failed",
+        "Average Temperature C":     "avg_temperature_c",
+        "Average Humidity Percent":  "avg_humidity_percent",
+    }, inplace=True)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    return df
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def detect_product_category(sector: str, product_type: str) -> str:
     combined = f"{sector} {product_type}".lower()
-    if any(k in combined for k in ["footwear", "shoe"]):
-        return "Footwear"
-    if any(k in combined for k in ["pharma", "medicine", "drug"]):
-        return "Pharmaceuticals"
-    if any(k in combined for k in ["food", "agri", "farm", "beverage"]):
-        return "Food & Agriculture"
-    if any(k in combined for k in ["steel", "metal", "iron"]):
-        return "Industrial Materials"
-    if any(k in combined for k in ["automotive", "vehicle", "motor"]):
-        return "Automotive"
-    if any(k in combined for k in ["home textile", "household", "furnish"]):
-        return "Home Textiles"
-    if any(k in combined for k in ["apparel", "garment", "clothing", "textile"]):
-        return "Apparel"
+    if any(k in combined for k in ["footwear", "shoe"]):          return "Footwear"
+    if any(k in combined for k in ["pharma", "medicine", "drug"]): return "Pharmaceuticals"
+    if any(k in combined for k in ["food", "agri", "farm", "beverage"]): return "Food & Agriculture"
+    if any(k in combined for k in ["steel", "metal", "iron"]):    return "Industrial Materials"
+    if any(k in combined for k in ["automotive", "vehicle", "motor"]): return "Automotive"
+    if any(k in combined for k in ["home textile", "household", "furnish"]): return "Home Textiles"
+    if any(k in combined for k in ["apparel", "garment", "clothing", "textile"]): return "Apparel"
     return "General Goods"
 
 def parse_worker_count(raw) -> int:
@@ -70,234 +156,426 @@ def parse_worker_count(raw) -> int:
         return 0
     raw = str(raw).split("|")[0].strip()
     if "-" in raw:
-        parts = raw.split("-")
-        try:
-            return int(parts[0])
-        except ValueError:
-            return 0
-    try:
-        return int(raw)
-    except ValueError:
-        return 0
+        try:    return int(raw.split("-")[0])
+        except: return 0
+    try:    return int(raw)
+    except: return 0
 
 def make_did(identifier: str) -> str:
     return f"did:dpp:{identifier.lower().replace(' ', '-')}"
 
-def make_vc(issuer_id: str, subject: dict, vc_type: str) -> dict:
+def get_stage_names(product_id: str) -> list[str]:
+    return [s["stage"] for s in lifecycle_store.get(product_id, [])]
+
+def _parse_date(d: str):
+    try:
+        return date_type.fromisoformat(str(d)[:10])
+    except Exception:
+        return None
+
+# ── Trust signals ─────────────────────────────────────────────────────────────
+
+def _build_trust_signals(subject: dict, csv_fields: set, actor) -> dict:
+    """
+    Per-field provenance metadata.
+      csv      — read from a verified open dataset (high confidence)
+      derived  — computed by the system (high confidence)
+      manual   — asserted by the requesting party (medium confidence)
+
+    Future work: 'iot' source for hardware-attested sensor readings.
+    """
+    field_signals: dict = {}
+    for key, val in subject.items():
+        if isinstance(val, dict):
+            continue
+        if key in csv_fields:
+            field_signals[key] = {"source": "csv",     "confidence": "high"}
+        elif key in {"id", "product_id", "serial_number", "manufacture_date",
+                     "eu_regulation_ref", "lifecycle_stage"}:
+            field_signals[key] = {"source": "derived", "confidence": "high"}
+        else:
+            field_signals[key] = {"source": "manual",  "confidence": "medium"}
     return {
+        "issuer_role":     actor.role        if actor else "unknown",
+        "issuer_tier":     actor.tier        if actor else 99,
+        "issuer_verified": actor is not None and actor.approved_by is not None,
+        "approved_by":     actor.approved_by if actor else None,
+        "field_signals":   field_signals,
+    }
+
+def make_vc(issuer_did: str, subject: dict, vc_type: str,
+            csv_fields: set = None, product_id: str = "") -> dict:
+    actor   = actors_module.get_actor(issuer_did)
+    cred_id = f"urn:credential:{uuid.uuid4()}"
+    now     = datetime.now(timezone.utc).isoformat()
+
+    trust_signals = _build_trust_signals(subject, csv_fields or set(), actor)
+    sl_index      = status_list.allocate_index(cred_id, product_id, vc_type)
+
+    vc = {
         "@context": [
             "https://www.w3.org/2018/credentials/v1",
-            "https://dpp.example.org/contexts/v1"
+            "https://dpp.example.org/contexts/v1",
+            "https://w3id.org/vc/status-list/2021/v1",
         ],
-        "type": ["VerifiableCredential", vc_type],
-        "id": f"urn:credential:{uuid.uuid4()}",
-        "issuer": issuer_id,
-        "issuanceDate": datetime.now(timezone.utc).isoformat(),
+        "type":             ["VerifiableCredential", vc_type],
+        "id":               cred_id,
+        "issuer":           issuer_did,
+        "issuerMetadata":   actor.to_public_dict() if actor else {
+                                "did": issuer_did, "name": issuer_did, "role": "unregistered"
+                            },
+        "issuanceDate":     now,
         "credentialSubject": subject,
-        "proof": {
-            "type": "Ed25519Signature2020",
-            "created": datetime.now(timezone.utc).isoformat(),
-            "proofPurpose": "assertionMethod",
-            "verificationMethod": f"{issuer_id}#key-1",
-            "jws": "MOCK_SIGNATURE_PLACEHOLDER"
+        "credentialStatus":  status_list.credential_status_entry(sl_index),
+        "trustSignals":      trust_signals,
+    }
+
+    signing_input = json.dumps({
+        "id": cred_id, "type": vc_type, "issuer": issuer_did,
+        "issuanceDate": now, "credentialSubject": subject,
+    }, sort_keys=True).encode()
+
+    if actor:
+        vc["proof"] = {
+            "type":               "Ed25519Signature2020",
+            "created":            now,
+            "proofPurpose":       "assertionMethod",
+            "verificationMethod": f"{issuer_did}#key-1",
+            "publicKey":          actor.public_key_b64,
+            "jws":                actor.sign(signing_input),
         }
-    }
+    else:
+        vc["proof"] = {
+            "type":               "Ed25519Signature2020",
+            "created":            now,
+            "proofPurpose":       "assertionMethod",
+            "verificationMethod": f"{issuer_did}#key-1",
+            "jws":                "UNREGISTERED_ISSUER",
+            "warning":            "Issuer DID not in actor registry",
+        }
+    return vc
 
-"""endpoints"""
+def validate_chain(product_id: str, required_prefix: str,
+                   new_date: str = None,
+                   issuer_did: str = None,
+                   vc_type: str = None) -> None:
+    """
+    1. Chain continuity  — Birth Certificate must exist (stage ordering not enforced in demo)
+    2. Revocation check  — no existing credential in chain is revoked
+    3. Temporal ordering — new_date >= last stage date
+    4. Issuer role check — issuer DID authorised for vc_type
+    """
+    stages   = get_stage_names(product_id)
+    existing = lifecycle_store.get(product_id, [])
 
-@app.get("/suggest-materials/{os_id}")
-def suggest_materials(os_id: str, limit: int = Query(5, ge=1, le=20)):
-    df_factories = load_factories()
-    row = df_factories[df_factories["os_id"] == os_id]
-    if row.empty:
-        raise HTTPException(status_code=404, detail="Factory not found")
+    # 1. Chain continuity — only require a Birth Certificate to exist
+    if not stages:
+        raise HTTPException(422,
+            detail=f"Product '{product_id}' has no Birth Certificate. "
+                   f"Issue one first via POST /issue-birth-certificate/{{os_id}}.")
+    # (stage ordering is advisory in demo mode — not enforced)
 
-    f        = row.fillna("").iloc[0].to_dict()
-    category = detect_product_category(
-        str(f.get("sector", "")),
-        str(f.get("product_type", ""))
-    )
+    # 2. Revocation check
+    for entry in existing:
+        _, revoked = status_list.lookup_by_credential_id(entry.get("credential_id", ""))
+        if revoked:
+            raise HTTPException(422,
+                detail=f"Chain compromised: credential '{entry['credential_id']}' "
+                       f"(stage '{entry['stage']}') has been revoked.")
 
-    material_types = CATEGORY_MATERIAL_MAP.get(category, ["fabric", "plastic"])
+    # 3. Temporal ordering
+    if new_date and existing:
+        last_d = _parse_date(existing[-1].get("date", ""))
+        new_d  = _parse_date(new_date)
+        if last_d and new_d and new_d < last_d:
+            raise HTTPException(422,
+                detail=f"Temporal violation: '{new_date}' is earlier than last stage '{existing[-1]['date']}'.")
 
-    df_mat = load_materials()
-    mask   = df_mat["description"].str.lower().isin([m.lower() for m in material_types])
-    matches = df_mat[mask][["raw_material_id", "description", "supplier",
-    "supplier_location", "cost_per_unit"]]\
-    .head(limit)\
-    .fillna("")\
-    .to_dict(orient="records")
+    # 4. Issuer role check
+    if issuer_did and vc_type:
+        try:
+            actors_module.require_actor(issuer_did, vc_type)
+        except ValueError as exc:
+            raise HTTPException(403, detail=str(exc))
 
-    return {
-        "os_id":           os_id,
-        "factory_name":    f.get("name", ""),
-        "product_category":category,
-        "material_types":  material_types,
-        "suggestions":     matches
-    }
+# ── Dataset bridge ────────────────────────────────────────────────────────────
 
+def bridge_product_context(os_id: str, product_category: str) -> dict:
+    """Join all three datasets for enriched birth certificate context."""
+    bridge: dict = {}
+    material_types = CATEGORY_MATERIAL_MAP.get(product_category, [])
+    try:
+        df_mat = load_materials()
+        mask = df_mat["description"].str.lower().isin([m.lower() for m in material_types])
+        bridge["suggested_materials"] = (
+            df_mat[mask][["raw_material_id", "description", "supplier",
+                          "supplier_location", "cost_per_unit"]]
+            .head(3).fillna("").to_dict(orient="records")
+        )
+        bridge["avg_material_cost"] = round(float(df_mat[mask]["cost_per_unit"].mean()), 2) if not df_mat[mask].empty else None
+    except Exception:
+        bridge["suggested_materials"] = []
+
+    prod_type_key = CATEGORY_TO_PROD_TYPE.get(product_category, "Appliances")
+    try:
+        df_prod = load_production()
+        subset  = df_prod[df_prod["product_type"] == prod_type_key]
+        if not subset.empty:
+            bridge["production_stats"] = {
+                "total_runs":        int(len(subset)),
+                "avg_scrap_rate":    round(float(subset["scrap_rate"].mean()), 4),
+                "avg_cost_per_unit": round(float(subset["material_cost_per_unit"].mean()), 2),
+            }
+    except Exception:
+        pass
+    return bridge
+
+# ── Factory endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/factories")
 def list_factories(limit: int = Query(20, ge=1, le=200)):
     df = load_factories()
     cols = ["os_id", "name", "address", "country_name", "sector", "product_type",
             "facility_type", "number_of_workers", "is_closed", "lat", "lng"]
-    available = [c for c in cols if c in df.columns]
-    return df[available].head(limit).fillna("").to_dict(orient="records")
+    records = df[[c for c in cols if c in df.columns]].head(limit).fillna("").to_dict(orient="records")
+    for r in records:
+        r["product_category"] = detect_product_category(
+            str(r.get("sector", "")), str(r.get("product_type", "")))
+    return records
 
 @app.get("/factories/{os_id}")
 def get_factory(os_id: str):
     df = load_factories()
     row = df[df["os_id"] == os_id]
     if row.empty:
-        raise HTTPException(status_code=404, detail="Factory not found")
-    return row.fillna("").iloc[0].to_dict()
+        raise HTTPException(404, detail="Factory not found")
+    r = row.fillna("").iloc[0].to_dict()
+    r["product_category"] = detect_product_category(
+        str(r.get("sector", "")), str(r.get("product_type", "")))
+    return r
+
+@app.get("/factories/{os_id}/products")
+def get_factory_products(os_id: str):
+    """Return all product IDs issued by this factory, with current stage count."""
+    product_ids = factory_products.get(os_id, [])
+    result = []
+    for pid in product_ids:
+        stages = lifecycle_store.get(pid, [])
+        result.append({
+            "product_id":    pid,
+            "stage_count":   len(stages),
+            "current_stage": stages[-1]["stage"] if stages else "Unknown",
+            "issued_date":   stages[0]["date"] if stages else None,
+        })
+    return {"os_id": os_id, "total": len(result), "products": result}
+
+@app.get("/suggest-materials/{os_id}")
+def suggest_materials(os_id: str, limit: int = Query(5, ge=1, le=20)):
+    df_factories = load_factories()
+    row = df_factories[df_factories["os_id"] == os_id]
+    if row.empty:
+        raise HTTPException(404, detail="Factory not found")
+    f = row.fillna("").iloc[0].to_dict()
+    category       = detect_product_category(str(f.get("sector", "")), str(f.get("product_type", "")))
+    material_types = CATEGORY_MATERIAL_MAP.get(category, ["fabric", "plastic"])
+    df_mat = load_materials()
+    mask   = df_mat["description"].str.lower().isin([m.lower() for m in material_types])
+    suggestions = (
+        df_mat[mask][["raw_material_id", "description", "supplier", "supplier_location", "cost_per_unit"]]
+        .head(limit).fillna("").to_dict(orient="records")
+    )
+    return {"os_id": os_id, "factory_name": f.get("name", ""), "product_category": category,
+            "material_types": material_types, "suggestions": suggestions}
+
+@app.get("/production-stats/{os_id}")
+def get_production_stats(os_id: str, limit: int = Query(10, ge=1, le=50)):
+    df_factories = load_factories()
+    row = df_factories[df_factories["os_id"] == os_id]
+    if row.empty:
+        raise HTTPException(404, detail="Factory not found")
+    f         = row.fillna("").iloc[0].to_dict()
+    category  = detect_product_category(str(f.get("sector", "")), str(f.get("product_type", "")))
+    prod_type = CATEGORY_TO_PROD_TYPE.get(category, "Appliances")
+    df        = load_production()
+    subset    = df[df["product_type"] == prod_type].copy().sort_values("date", ascending=False)
+    recent    = subset.head(limit).fillna(0).copy()
+    recent["date"] = recent["date"].dt.strftime("%Y-%m-%d")
+    agg = subset.agg({
+        "units_produced": "mean", "defects": "mean", "scrap_rate": "mean",
+        "production_time_hours": "mean", "energy_consumption_kwh": "mean",
+        "quality_checks_failed": "mean", "material_cost_per_unit": "mean",
+    }).round(2).to_dict()
+    return {"os_id": os_id, "factory_name": f.get("name", ""), "product_category": category,
+            "mapped_prod_type": prod_type, "total_runs": int(len(subset)),
+            "averages": agg, "recent_runs": recent.to_dict(orient="records")}
+
+# ── Birth certificate ─────────────────────────────────────────────────────────
 
 @app.post("/issue-birth-certificate/{os_id}")
-def issue_birth_certificate(os_id: str):
+def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     df = load_factories()
     row = df[df["os_id"] == os_id]
     if row.empty:
-        raise HTTPException(status_code=404, detail="Factory not found")
+        raise HTTPException(404, detail="Factory not found")
 
-    f = row.fillna("").iloc[0].to_dict()
+    f          = row.fillna("").iloc[0].to_dict()
     sector     = str(f.get("sector", ""))
     prod_type  = str(f.get("product_type", ""))
     category   = detect_product_category(sector, prod_type)
     serial_no  = f"SN-{os_id[-6:]}-{datetime.now().strftime('%Y%m%d')}"
     product_id = f"urn:product:{category.lower().replace(' ', '-')}:{serial_no}"
-    issuer_did = make_did(os_id)
+
+    factory_actor = actors_module.get_or_create_factory_actor(os_id, f.get("name", ""))
+    issuer_did    = factory_actor.did
 
     subject = {
-        "id": product_id,
-        "serial_number": serial_no,
+        "id":               product_id,
+        "serial_number":    serial_no,
         "product_category": category,
-        "product_type": prod_type or category,
-        "sector": sector,
+        "product_type":     prod_type or category,
+        "sector":           sector,
         "eu_regulation_ref": "ESPR/2024",
         "manufacturer": {
-            "id": issuer_did,
-            "os_id": os_id,
-            "name": f.get("name", ""),
-            "address": f.get("address", ""),
-            "country": f.get("country_code", ""),
-            "city": f.get("address", "").split(",")[-1].strip(),
-            "lat": f.get("lat", ""),
-            "lng": f.get("lng", ""),
+            "id":            issuer_did,
+            "os_id":         os_id,
+            "name":          f.get("name", ""),
+            "address":       f.get("address", ""),
+            "country":       f.get("country_code", ""),
+            "city":          f.get("address", "").split(",")[-1].strip(),
+            "lat":           f.get("lat", ""),
+            "lng":           f.get("lng", ""),
             "facility_type": f.get("facility_type", ""),
-            "num_workers": parse_worker_count(f.get("number_of_workers", 0)),
+            "num_workers":   parse_worker_count(f.get("number_of_workers", 0)),
         },
-        "manufacture_date": datetime.now(timezone.utc).date().isoformat(),
-        "lifecycle_stage": "Manufactured",
+        "manufacture_date":   datetime.now(timezone.utc).date().isoformat(),
+        "lifecycle_stage":    "Manufactured",
+        "production_context": bridge_product_context(os_id, category),
     }
-    vc = make_vc(issuer_did, subject, "ProductBirthCertificate")
-    lifecycle_store[product_id] = [{
-        "stage": "Manufactured",
-        "date": subject["manufacture_date"],
-        "issuer": f.get("name", ""),
+
+    vc = make_vc(issuer_did, subject, "ProductBirthCertificate",
+                 csv_fields=FACTORY_CSV_FIELDS, product_id=product_id)
+    entry = {
+        "stage":         "Manufactured",
+        "date":          subject["manufacture_date"],
+        "issuer":        f.get("name", ""),
+        "issuer_did":    issuer_did,
         "credential_id": vc["id"],
-        "details": {
-            "factory": f.get("name"),
-            "country": f.get("country_name"),
-            "facility_type": f.get("facility_type"),
-        }
-    }]
+        "credential":    vc,
+    }
+    lifecycle_store[product_id]  = [entry]
+    credential_index[vc["id"]]   = entry
+    factory_products.setdefault(os_id, []).append(product_id)
     return {"product_id": product_id, "credential": vc}
 
+# ── Lifecycle stages ──────────────────────────────────────────────────────────
 
 @app.post("/add-lifecycle-stage/material-sourcing")
-def add_material_sourcing(record: MaterialSourcingRecord):
+def add_material_sourcing(record: MaterialSourcingRecord, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did("material-sourcing-authority")
-    vc = make_vc(issuer_did, record.model_dump(), "MaterialSourcingCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": "Material Sourcing",
-        "date": record.sourcing_date,
-        "issuer": record.certifying_body,
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    issuer_did = record.issuer_did or DEMO_SUPPLIER_DID
+    validate_chain(product_id, "", new_date=record.sourcing_date,
+                   issuer_did=issuer_did, vc_type="MaterialSourcingCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "MaterialSourcingCredential",
+                 csv_fields=MATERIAL_CSV_FIELDS, product_id=product_id)
+    entry = {"stage": "Material Sourcing", "date": record.sourcing_date,
+             "issuer": record.certifying_body, "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
-
 
 @app.post("/add-lifecycle-stage/certification")
-def add_certification(record: CertificationRecord):
+def add_certification(record: CertificationRecord, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did(record.certifying_body)
-    vc = make_vc(issuer_did, record.model_dump(), "CertificationCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": "Certification",
-        "date": record.audit_date,
-        "issuer": record.certifying_body,
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    issuer_did = record.issuer_did or DEMO_CERTIFIER_DID
+    # auto-derive sourcing_id from latest material-sourcing credential in chain
+    if not record.sourcing_id:
+        for e in reversed(lifecycle_store.get(product_id, [])):
+            if "Material Sourcing" in e.get("stage", ""):
+                record.sourcing_id = e.get("credential_id", "auto")
+                break
+        else:
+            record.sourcing_id = "auto"
+    validate_chain(product_id, "", new_date=record.audit_date,
+                   issuer_did=issuer_did, vc_type="CertificationCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "CertificationCredential", product_id=product_id)
+    entry = {"stage": "Certification", "date": record.audit_date,
+             "issuer": record.certifying_body, "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
-
 
 @app.post("/add-lifecycle-stage/custody-transfer")
-def add_custody_transfer(record: CustodyTransfer):
+def add_custody_transfer(record: CustodyTransfer, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did(record.from_actor_name)
-    vc = make_vc(issuer_did, record.model_dump(), "CustodyTransferCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": f"Transfer {record.transfer_sequence}: {record.transfer_type}",
-        "date": record.handover_date,
-        "issuer": record.from_actor_name,
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    issuer_did = record.issuer_did or DEMO_LOGISTICS_DID
+    # auto-assign transfer_sequence
+    if record.transfer_sequence is None:
+        existing_transfers = sum(
+            1 for e in lifecycle_store.get(product_id, [])
+            if e.get("stage", "").startswith("Transfer")
+        )
+        record.transfer_sequence = existing_transfers + 1
+    validate_chain(product_id, "", new_date=record.handover_date,
+                   issuer_did=issuer_did, vc_type="CustodyTransferCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "CustodyTransferCredential", product_id=product_id)
+    stage_label = f"Transfer {record.transfer_sequence}: {record.transfer_type}"
+    entry = {"stage": stage_label, "date": record.handover_date,
+             "issuer": record.from_actor_name, "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
-
 
 @app.post("/add-lifecycle-stage/ownership")
-def add_ownership(record: OwnershipRecord):
+def add_ownership(record: OwnershipRecord, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did("ownership-registry")
-    vc = make_vc(issuer_did, record.model_dump(), "OwnershipCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": "Ownership / Usage",
-        "date": record.ownership_start,
-        "issuer": "Ownership Registry",
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    stages     = lifecycle_store.get(product_id, [])
+    issuer_did = record.issuer_did or (stages[0]["issuer_did"] if stages else DEMO_SUPPLIER_DID)
+    validate_chain(product_id, "", new_date=record.ownership_start,
+                   issuer_did=issuer_did, vc_type="OwnershipCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "OwnershipCredential", product_id=product_id)
+    entry = {"stage": "Ownership / Usage", "date": record.ownership_start,
+             "issuer": "Ownership Registry", "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
-
 
 @app.post("/add-lifecycle-stage/repair")
-def add_repair(record: RepairRecord):
+def add_repair(record: RepairRecord, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did(record.service_provider)
-    vc = make_vc(issuer_did, record.model_dump(), "RepairCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": f"Repair: {record.service_type}",
-        "date": record.service_date,
-        "issuer": record.service_provider,
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    stages     = lifecycle_store.get(product_id, [])
+    issuer_did = record.issuer_did or (stages[0]["issuer_did"] if stages else make_did(record.service_provider or "repair-service"))
+    validate_chain(product_id, "", new_date=record.service_date,
+                   issuer_did=issuer_did, vc_type="RepairCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "RepairCredential", product_id=product_id)
+    entry = {"stage": f"Repair: {record.service_type}", "date": record.service_date,
+             "issuer": record.service_provider, "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
 
-
 @app.post("/add-lifecycle-stage/end-of-life")
-def add_end_of_life(record: EndOfLifeRecord):
+def add_end_of_life(record: EndOfLifeRecord, _actor=Depends(require_auth)):
     product_id = record.product_id
-    issuer_did = make_did(record.recycler_name)
-    vc = make_vc(issuer_did, record.model_dump(), "EndOfLifeCredential")
-
-    lifecycle_store.setdefault(product_id, []).append({
-        "stage": "End of Life",
-        "date": record.collection_date,
-        "issuer": record.recycler_name,
-        "credential_id": vc["id"],
-        "details": record.model_dump()
-    })
+    issuer_did = record.issuer_did or DEMO_RECYCLER_DID
+    validate_chain(product_id, "", new_date=record.collection_date,
+                   issuer_did=issuer_did, vc_type="EndOfLifeCredential")
+    vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
+                 "EndOfLifeCredential", product_id=product_id)
+    entry = {"stage": "End of Life", "date": record.collection_date,
+             "issuer": record.recycler_name, "issuer_did": issuer_did,
+             "credential_id": vc["id"], "credential": vc}
+    lifecycle_store.setdefault(product_id, []).append(entry)
+    credential_index[vc["id"]] = entry
     return {"product_id": product_id, "credential": vc}
 
 
@@ -305,30 +583,196 @@ def add_end_of_life(record: EndOfLifeRecord):
 def get_product_lifecycle(product_id: str):
     lifecycle = lifecycle_store.get(product_id)
     if lifecycle is None:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return {
-        "product_id": product_id,
-        "total_stages": len(lifecycle),
-        "lifecycle": lifecycle
-    }
-
+        raise HTTPException(404, detail="Product not found")
+    return {"product_id": product_id, "total_stages": len(lifecycle), "lifecycle": lifecycle}
 
 @app.get("/product/{product_id}/verify")
 def verify_product(product_id: str):
     lifecycle = lifecycle_store.get(product_id)
     if lifecycle is None:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(404, detail="Product not found")
+
+    credentials_report = []
+    overall_valid = True
+
+    for i, entry in enumerate(lifecycle):
+        vc         = entry.get("credential", {})
+        cid        = entry.get("credential_id", "")
+        issuer_did = entry.get("issuer_did", vc.get("issuer", ""))
+        proof      = vc.get("proof", {})
+        actor      = actors_module.get_actor(issuer_did)
+        vc_types   = vc.get("type", [])
+        vc_type    = vc_types[-1] if vc_types else entry["stage"]
+
+        # Check 1: signature
+        sig_ok = False
+        jws = proof.get("jws", "")
+        if actor and jws and jws not in ("MOCK_SIGNATURE_PLACEHOLDER", "UNREGISTERED_ISSUER", ""):
+            signing_input = json.dumps({
+                "id": cid, "type": vc_type, "issuer": issuer_did,
+                "issuanceDate": vc.get("issuanceDate", ""),
+                "credentialSubject": vc.get("credentialSubject", {}),
+            }, sort_keys=True).encode()
+            sig_ok = actor.verify(signing_input, jws)
+
+        # Check 2: revocation
+        _, revoked = status_list.lookup_by_credential_id(cid)
+
+        # Check 3: issuer role
+        issuer_registered = actor is not None
+        issuer_role_ok    = actor.can_issue(vc_type) if actor else False
+
+        # Check 4: temporal ordering vs previous stage
+        temporal_ok = True
+        if i > 0:
+            prev_d = _parse_date(lifecycle[i - 1].get("date", ""))
+            this_d = _parse_date(entry.get("date", ""))
+            if prev_d and this_d and this_d < prev_d:
+                temporal_ok = False
+
+        checks = {
+            "signature_valid":   sig_ok,
+            "not_revoked":       not revoked,
+            "issuer_registered": issuer_registered,
+            "issuer_role_valid": issuer_role_ok,
+            "temporal_order":    temporal_ok,
+        }
+        errors = []
+        if not sig_ok:            errors.append("Signature could not be verified")
+        if revoked:               errors.append("Credential has been revoked")
+        if not issuer_registered: errors.append(f"Issuer '{issuer_did}' not in actor registry")
+        if not issuer_role_ok:    errors.append("Issuer role not authorised for this credential type")
+        if not temporal_ok:       errors.append("Stage date precedes previous stage date")
+
+        cred_valid = not revoked and issuer_registered and temporal_ok
+        if not cred_valid:
+            overall_valid = False
+
+        credentials_report.append({
+            "credential_id": cid,
+            "type":         vc_type,
+            "stage":        entry["stage"],
+            "issuer":       issuer_did,
+            "issuer_name":  actor.name if actor else issuer_did,
+            "issuer_role":  actor.role if actor else "unknown",
+            "issuer_tier":  actor.tier if actor else 99,
+            "valid":        cred_valid,
+            "checks":       checks,
+            "errors":       errors,
+            "trust_signals": vc.get("trustSignals", {}),
+        })
+
     return {
-        "product_id": product_id,
-        "verified": True,
+        "product_id":        product_id,
+        "overall_valid":     overall_valid,
         "total_credentials": len(lifecycle),
-        "verification_summary": [
-            {
-                "stage": stage["stage"],
-                "issuer": stage["issuer"],
-                "credential_id": stage["credential_id"],
-                "signature_valid": True
-            }
-            for stage in lifecycle
-        ]
+        "credentials":       credentials_report,
+    }
+
+
+@app.get("/status-list")
+def get_status_list():
+    root = actors_module.get_actor("did:dpp:root-authority")
+    return status_list.status_list_vc(root.did if root else "did:dpp:root-authority")
+
+@app.get("/status-list/entries")
+def list_status_entries():
+    return status_list.list_all()
+
+class RevokeRequest(BaseModel):
+    reason: Optional[str] = "Revoked by issuer"
+
+@app.post("/credentials/{credential_id}/revoke")
+def revoke_credential(credential_id: str, body: RevokeRequest = RevokeRequest(), _actor=Depends(require_auth)):
+    idx, _ = status_list.lookup_by_credential_id(credential_id)
+    if idx is None:
+        raise HTTPException(404, detail="Credential not found in status list")
+    status_list.revoke(idx)
+    return {"credential_id": credential_id, "revoked": True,
+            "reason": body.reason, "status_index": idx}
+
+@app.get("/credentials/{credential_id}/status")
+def check_credential_status(credential_id: str):
+    idx, revoked = status_list.lookup_by_credential_id(credential_id)
+    if idx is None:
+        raise HTTPException(404, detail="Credential not found in status list")
+    return {"credential_id": credential_id, "status_index": idx, "revoked": revoked}
+
+class DemoTokenRequest(BaseModel):
+    did: str
+
+@app.post("/admin/demo-token")
+def demo_token(body: DemoTokenRequest):
+    """Demo-only: issue a session token for any registered actor DID without DIDAuth."""
+    actor = actors_module.get_actor(body.did)
+    if not actor:
+        raise HTTPException(404, detail=f"Unknown actor DID: {body.did}")
+    import secrets as _secrets
+    token = _secrets.token_hex(32)
+    actors_module._tokens[token] = body.did
+    return {"token": token, "did": body.did,
+            "actor": actor.to_public_dict(),
+            "note": "Demo token — no signature required. Use DIDAuth in production."}
+
+class DemoTokenRequest(BaseModel):
+    did: str
+
+@app.post("/admin/demo-token")
+def demo_token(body: DemoTokenRequest):
+    """Demo-only: issue a session token for any registered actor DID without DIDAuth."""
+    actor = actors_module.get_actor(body.did)
+    if not actor:
+        raise HTTPException(404, detail=f"Unknown actor DID: {body.did}")
+    import secrets as _secrets
+    token = _secrets.token_hex(32)
+    actors_module._tokens[token] = body.did
+    return {"token": token, "did": body.did,
+            "actor": actor.to_public_dict(),
+            "note": "Demo token — no signature required. Use DIDAuth in production."}
+
+@app.get("/actors")
+def list_actors():
+    actor_list = [a.to_public_dict() for a in actors_module.ACTOR_REGISTRY.values()]
+    return {"actors": actor_list, "total": len(actor_list)}
+
+@app.get("/actors/{did:path}")
+def get_actor_endpoint(did: str):
+    actor = actors_module.get_actor(did)
+    if not actor:
+        raise HTTPException(404, detail="Actor not found")
+    return actor.to_public_dict()
+
+class ChallengeRequest(BaseModel):
+    did: str
+
+class AuthVerifyRequest(BaseModel):
+    did: str
+    challenge: str
+    signature: str
+
+@app.post("/auth/challenge")
+def auth_challenge(body: ChallengeRequest):
+    try:
+        nonce = actors_module.create_challenge(body.did)
+    except ValueError as e:
+        raise HTTPException(404, detail=str(e))
+    return {
+        "challenge": nonce,
+        "did": body.did,
+        "expires_in_seconds": 300,
+        "instructions": "Sign the challenge string with your Ed25519 private key "
+                        "and POST base64-encoded signature to /auth/verify.",
+    }
+
+@app.post("/auth/verify")
+def auth_verify(body: AuthVerifyRequest):
+    token = actors_module.verify_challenge(body.did, body.challenge, body.signature)
+    if not token:
+        raise HTTPException(401, detail="Invalid or expired challenge signature")
+    actor = actors_module.get_actor(body.did)
+    return {
+        "token": token,
+        "did":   body.did,
+        "actor": actor.to_public_dict() if actor else None,
+        "message": "Pass token as 'Authorization: Bearer <token>' on subsequent requests.",
     }
