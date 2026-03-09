@@ -4,6 +4,9 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import api, { getStoredActor } from '../../../lib/api'
 
+// Roles allowed to issue birth certificates (matches backend ROLE_PERMISSIONS)
+const BIRTH_CERT_ROLES = new Set(['tier0_root', 'tier1_regulator', 'tier2_factory'])
+
 export default function IssuePage() {
   const { os_id } = useParams()
   const [factory, setFactory] = useState(null)
@@ -21,6 +24,8 @@ export default function IssuePage() {
       .catch(() => setError('Factory not found.'))
       .finally(() => setLoading(false))
   }, [os_id])
+
+  const canIssue = actor && BIRTH_CERT_ROLES.has(actor.role)
 
   async function issueCredential() {
     setIssuing(true)
@@ -47,9 +52,20 @@ export default function IssuePage() {
         <p className="text-gray-500 text-sm mb-6">{factory.name} &mdash; {factory.address}</p>
       )}
 
-      {!actor && (
+      {!actor ? (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 text-sm text-amber-800">
-          You must sign in before issuing credentials. Use the <strong>Sign in</strong> selector in the header.
+          You must <strong>sign in</strong> before issuing credentials. Use the selector in the header.
+        </div>
+      ) : !canIssue ? (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-sm text-red-800">
+          Your role <strong>{actor.role}</strong> cannot issue birth certificates.
+          Sign in as a <strong>Factory</strong>, <strong>Regulator</strong>, or <strong>Root Authority</strong>.
+        </div>
+      ) : (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6 text-sm text-blue-700 flex items-center gap-2">
+          <span className="font-medium">{actor.name}</span>
+          <span className="text-blue-400">·</span>
+          <span className="text-blue-500 text-xs">{actor.role}</span>
         </div>
       )}
 
@@ -71,10 +87,10 @@ export default function IssuePage() {
           </dl>
           <button
             onClick={issueCredential}
-            disabled={issuing || !actor}
+            disabled={issuing || !canIssue}
             className="mt-5 w-full bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {issuing ? 'Issuing...' : !actor ? 'Sign in to issue' : 'Issue W3C Verifiable Credential'}
+            {issuing ? 'Issuing...' : !actor ? 'Sign in to issue' : !canIssue ? 'Role not authorised' : 'Issue W3C Verifiable Credential'}
           </button>
           {error && <p className="text-red-600 text-sm mt-3">{error}</p>}
         </div>

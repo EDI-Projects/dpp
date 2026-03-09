@@ -10,18 +10,31 @@ const TIER_COLORS = {
   2: 'bg-gray-100 text-gray-700',
 }
 const ROLE_COLORS = {
-  root:      'bg-red-50 text-red-700',
-  certifier: 'bg-yellow-50 text-yellow-700',
-  recycler:  'bg-green-50 text-green-700',
-  regulator: 'bg-purple-50 text-purple-700',
-  supplier:  'bg-cyan-50 text-cyan-700',
-  logistics: 'bg-indigo-50 text-indigo-700',
-  factory:   'bg-gray-50 text-gray-600',
+  tier0_root:      'bg-red-50 text-red-700 border border-red-200',
+  tier1_certifier: 'bg-yellow-50 text-yellow-700 border border-yellow-200',
+  tier1_recycler:  'bg-green-50 text-green-700 border border-green-200',
+  tier1_regulator: 'bg-purple-50 text-purple-700 border border-purple-200',
+  tier2_supplier:  'bg-cyan-50 text-cyan-700 border border-cyan-200',
+  tier2_logistics: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
+  tier2_factory:   'bg-gray-50 text-gray-600 border border-gray-200',
 }
-
-function truncate(str, n = 24) {
-  if (!str) return '—'
-  return str.length > n ? str.slice(0, n) + '…' : str
+const ROLE_SHORT = {
+  tier0_root: 'Root',
+  tier1_certifier: 'Certifier',
+  tier1_recycler: 'Recycler',
+  tier1_regulator: 'Regulator',
+  tier2_supplier: 'Supplier',
+  tier2_logistics: 'Logistics',
+  tier2_factory: 'Factory',
+}
+const ROLE_PERMISSIONS_DISPLAY = {
+  tier0_root: 'All credentials',
+  tier1_regulator: 'All credentials',
+  tier1_certifier: 'CertificationCredential',
+  tier1_recycler: 'EndOfLifeCredential',
+  tier2_factory: 'BirthCertificate, Transfer, Ownership, Repair',
+  tier2_supplier: 'MaterialSourcingCredential',
+  tier2_logistics: 'CustodyTransferCredential',
 }
 
 export default function ActorsPage() {
@@ -62,16 +75,14 @@ export default function ActorsPage() {
                   <span className={`text-xs px-2 py-0.5 rounded font-medium ${TIER_COLORS[actor.tier] || 'bg-gray-100 text-gray-600'}`}>
                     {TIER_LABELS[actor.tier] || `Tier ${actor.tier}`}
                   </span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${ROLE_COLORS[actor.role] || 'bg-gray-50 text-gray-500'}`}>
-                    {actor.role}
+                  <span className={`text-xs px-2 py-0.5 rounded font-medium ${ROLE_COLORS[actor.role] || 'bg-gray-50 text-gray-500 border border-gray-200'}`}>
+                    {ROLE_SHORT[actor.role] || actor.role}
                   </span>
                 </div>
                 <p className="text-xs text-gray-400 font-mono mt-0.5 truncate">{actor.did}</p>
-                {actor.approved_by && (
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    Approved by: <span className="font-mono">{actor.approved_by}</span>
-                  </p>
-                )}
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Can issue: <span className="text-gray-500">{ROLE_PERMISSIONS_DISPLAY[actor.role] || '—'}</span>
+                </p>
               </div>
               <button
                 onClick={() => setExpanded(expanded === actor.did ? null : actor.did)}
@@ -89,7 +100,7 @@ export default function ActorsPage() {
                 </div>
                 {actor.public_key && (
                   <div>
-                    <dt className="text-gray-400 mb-0.5">Public Key (Ed25519)</dt>
+                    <dt className="text-gray-400 mb-0.5">Public Key (Ed25519, base64)</dt>
                     <dd className="font-mono break-all text-gray-600 bg-gray-50 rounded p-2">
                       {actor.public_key}
                     </dd>
@@ -101,13 +112,15 @@ export default function ActorsPage() {
                     <dd className="font-mono">{actor.approved_by}</dd>
                   </div>
                 )}
-                <div>
-                  <dt className="text-gray-400 mb-0.5">Tier</dt>
-                  <dd>{TIER_LABELS[actor.tier] || actor.tier}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-400 mb-0.5">Role</dt>
-                  <dd className="capitalize">{actor.role}</dd>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <dt className="text-gray-400 mb-0.5">Trust Tier</dt>
+                    <dd>{TIER_LABELS[actor.tier] || actor.tier}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-gray-400 mb-0.5">Issuance Permissions</dt>
+                    <dd>{ROLE_PERMISSIONS_DISPLAY[actor.role] || '—'}</dd>
+                  </div>
                 </div>
               </dl>
             )}

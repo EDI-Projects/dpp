@@ -18,7 +18,8 @@ export default function RootLayout({ children }) {
             <div className="flex items-center gap-6 text-sm text-gray-600">
               <a href="/" className="hover:text-gray-900">Factories</a>
               <a href="/actors" className="hover:text-gray-900">Actors</a>
-              <a href="/verify" className="hover:text-gray-900">Verify</a>
+              <a href="/dashboard" className="hover:text-gray-900">Dashboard</a>
+              <a href="/register" className="hover:text-gray-900">Register</a>
             </div>
             <SessionBar />
           </nav>

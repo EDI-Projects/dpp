@@ -36,6 +36,7 @@ import status_list
 from actors import (
     DEMO_CERTIFIER_DID, DEMO_RECYCLER_DID,
     DEMO_SUPPLIER_DID, DEMO_LOGISTICS_DID,
+    DEMO_FACTORY_DID,
 )
 
 app = FastAPI(title="Digital Product Passport API", version="2.0.0")
@@ -56,15 +57,25 @@ PRODUCTION_PATH = "../data/y1AQEIpMTR2j7xgr9MH0_Manufacturing Dataset.csv"
 lifecycle_store: dict[str, list]   = {}   # product_id -> list of stage entries
 credential_index: dict[str, dict]  = {}   # credential_id -> stage entry
 factory_products: dict[str, list]  = {}   # os_id -> [product_ids]
+audit_log: list[dict]              = []   # platform audit trail
+
+def _log(event: str, actor_did: str = None, detail: str = None, product_id: str = None):
+    audit_log.append({
+        "ts":         datetime.now(timezone.utc).isoformat(),
+        "event":      event,
+        "actor_did":  actor_did,
+        "product_id": product_id,
+        "detail":     detail,
+    })
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
 
 def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)):
-    """Dependency: validate Bearer token issued by /admin/demo-token or /auth/verify."""
+    """Dependency: validate Bearer token issued by POST /auth/verify (DIDAuth)."""
     if not creds or not creds.credentials:
         raise HTTPException(401, detail="Authentication required. "
-            "Get a token from POST /admin/demo-token.")
+            "Obtain a token via POST /auth/challenge → /auth/sign → /auth/verify.")
     actor = actors_module.resolve_token(creds.credentials)
     if not actor:
         raise HTTPException(403, detail="Invalid or expired token.")
@@ -413,6 +424,11 @@ def get_production_stats(os_id: str, limit: int = Query(10, ge=1, le=50)):
 
 @app.post("/issue-birth-certificate/{os_id}")
 def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
+    if not _actor.can_issue("ProductBirthCertificate"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' is not authorised to issue ProductBirthCertificate. "
+            f"Sign in as a factory actor (Tier 2 factory) or a Tier 0/1 regulator."
+        ))
     df = load_factories()
     row = df[df["os_id"] == os_id]
     if row.empty:
@@ -425,8 +441,9 @@ def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     serial_no  = f"SN-{os_id[-6:]}-{datetime.now().strftime('%Y%m%d')}"
     product_id = f"urn:product:{category.lower().replace(' ', '-')}:{serial_no}"
 
-    factory_actor = actors_module.get_or_create_factory_actor(os_id, f.get("name", ""))
-    issuer_did    = factory_actor.did
+    # Register factory actor for traceability but sign with the authenticated actor
+    actors_module.get_or_create_factory_actor(os_id, f.get("name", ""))
+    issuer_did = _actor.did
 
     subject = {
         "id":               product_id,
@@ -465,14 +482,18 @@ def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     lifecycle_store[product_id]  = [entry]
     credential_index[vc["id"]]   = entry
     factory_products.setdefault(os_id, []).append(product_id)
+    _log("CREDENTIAL_ISSUED", issuer_did, f"ProductBirthCertificate", product_id)
     return {"product_id": product_id, "credential": vc}
-
-# ── Lifecycle stages ──────────────────────────────────────────────────────────
 
 @app.post("/add-lifecycle-stage/material-sourcing")
 def add_material_sourcing(record: MaterialSourcingRecord, _actor=Depends(require_auth)):
+    if not _actor.can_issue("MaterialSourcingCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue MaterialSourcingCredential. "
+            f"Sign in as a supplier actor."
+        ))
     product_id = record.product_id
-    issuer_did = record.issuer_did or DEMO_SUPPLIER_DID
+    issuer_did = _actor.did  # always use authenticated actor; ignore client-supplied issuer_did
     validate_chain(product_id, "", new_date=record.sourcing_date,
                    issuer_did=issuer_did, vc_type="MaterialSourcingCredential")
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
@@ -483,12 +504,18 @@ def add_material_sourcing(record: MaterialSourcingRecord, _actor=Depends(require
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "MaterialSourcingCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 @app.post("/add-lifecycle-stage/certification")
 def add_certification(record: CertificationRecord, _actor=Depends(require_auth)):
+    if not _actor.can_issue("CertificationCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue CertificationCredential. "
+            f"Sign in as a certifier actor."
+        ))
     product_id = record.product_id
-    issuer_did = record.issuer_did or DEMO_CERTIFIER_DID
+    issuer_did = _actor.did  # always use authenticated actor
     # auto-derive sourcing_id from latest material-sourcing credential in chain
     if not record.sourcing_id:
         for e in reversed(lifecycle_store.get(product_id, [])):
@@ -506,12 +533,18 @@ def add_certification(record: CertificationRecord, _actor=Depends(require_auth))
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "CertificationCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 @app.post("/add-lifecycle-stage/custody-transfer")
 def add_custody_transfer(record: CustodyTransfer, _actor=Depends(require_auth)):
+    if not _actor.can_issue("CustodyTransferCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue CustodyTransferCredential. "
+            f"Sign in as a logistics or factory actor."
+        ))
     product_id = record.product_id
-    issuer_did = record.issuer_did or DEMO_LOGISTICS_DID
+    issuer_did = _actor.did  # always use authenticated actor
     # auto-assign transfer_sequence
     if record.transfer_sequence is None:
         existing_transfers = sum(
@@ -529,13 +562,18 @@ def add_custody_transfer(record: CustodyTransfer, _actor=Depends(require_auth)):
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "CustodyTransferCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 @app.post("/add-lifecycle-stage/ownership")
 def add_ownership(record: OwnershipRecord, _actor=Depends(require_auth)):
+    if not _actor.can_issue("OwnershipCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue OwnershipCredential. "
+            f"Sign in as a factory actor."
+        ))
     product_id = record.product_id
-    stages     = lifecycle_store.get(product_id, [])
-    issuer_did = record.issuer_did or (stages[0]["issuer_did"] if stages else DEMO_SUPPLIER_DID)
+    issuer_did = _actor.did  # always use authenticated actor
     validate_chain(product_id, "", new_date=record.ownership_start,
                    issuer_did=issuer_did, vc_type="OwnershipCredential")
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
@@ -545,13 +583,18 @@ def add_ownership(record: OwnershipRecord, _actor=Depends(require_auth)):
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "OwnershipCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 @app.post("/add-lifecycle-stage/repair")
 def add_repair(record: RepairRecord, _actor=Depends(require_auth)):
+    if not _actor.can_issue("RepairCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue RepairCredential. "
+            f"Sign in as a factory actor."
+        ))
     product_id = record.product_id
-    stages     = lifecycle_store.get(product_id, [])
-    issuer_did = record.issuer_did or (stages[0]["issuer_did"] if stages else make_did(record.service_provider or "repair-service"))
+    issuer_did = _actor.did  # always use authenticated actor
     validate_chain(product_id, "", new_date=record.service_date,
                    issuer_did=issuer_did, vc_type="RepairCredential")
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
@@ -561,12 +604,18 @@ def add_repair(record: RepairRecord, _actor=Depends(require_auth)):
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "RepairCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 @app.post("/add-lifecycle-stage/end-of-life")
 def add_end_of_life(record: EndOfLifeRecord, _actor=Depends(require_auth)):
+    if not _actor.can_issue("EndOfLifeCredential"):
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot issue EndOfLifeCredential. "
+            f"Sign in as a recycler actor."
+        ))
     product_id = record.product_id
-    issuer_did = record.issuer_did or DEMO_RECYCLER_DID
+    issuer_did = _actor.did  # always use authenticated actor
     validate_chain(product_id, "", new_date=record.collection_date,
                    issuer_did=issuer_did, vc_type="EndOfLifeCredential")
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
@@ -576,6 +625,7 @@ def add_end_of_life(record: EndOfLifeRecord, _actor=Depends(require_auth)):
              "credential_id": vc["id"], "credential": vc}
     lifecycle_store.setdefault(product_id, []).append(entry)
     credential_index[vc["id"]] = entry
+    _log("CREDENTIAL_ISSUED", issuer_did, "EndOfLifeCredential", product_id)
     return {"product_id": product_id, "credential": vc}
 
 
@@ -687,9 +737,23 @@ def revoke_credential(credential_id: str, body: RevokeRequest = RevokeRequest(),
     idx, _ = status_list.lookup_by_credential_id(credential_id)
     if idx is None:
         raise HTTPException(404, detail="Credential not found in status list")
+
+    # Revocation is restricted to: Tier 0 root, Tier 1 regulator, or the original credential issuer
+    is_elevated = _actor.can_issue("*")  # True for tier0 root and tier1 regulator
+    entry = credential_index.get(credential_id)
+    is_original_issuer = entry and entry.get("issuer_did") == _actor.did
+    if not is_elevated and not is_original_issuer:
+        raise HTTPException(403, detail=(
+            f"Role '{_actor.role}' cannot revoke this credential. "
+            f"Only the original issuer ({entry.get('issuer_did', 'unknown') if entry else 'unknown'}) "
+            f"or a Tier 0/1 authority can revoke credentials."
+        ))
+
     status_list.revoke(idx)
+    _log("CREDENTIAL_REVOKED", _actor.did, f"Revoked: {credential_id}", entry.get("product_id") if entry else None)
     return {"credential_id": credential_id, "revoked": True,
-            "reason": body.reason, "status_index": idx}
+            "reason": body.reason, "status_index": idx,
+            "revoked_by": _actor.did}
 
 @app.get("/credentials/{credential_id}/status")
 def check_credential_status(credential_id: str):
@@ -698,37 +762,29 @@ def check_credential_status(credential_id: str):
         raise HTTPException(404, detail="Credential not found in status list")
     return {"credential_id": credential_id, "status_index": idx, "revoked": revoked}
 
-class DemoTokenRequest(BaseModel):
+class SignRequest(BaseModel):
     did: str
+    challenge: str
 
-@app.post("/admin/demo-token")
-def demo_token(body: DemoTokenRequest):
-    """Demo-only: issue a session token for any registered actor DID without DIDAuth."""
+@app.post("/auth/sign")
+def auth_sign(body: SignRequest):
+    """
+    Demo wallet endpoint: signs a challenge with the actor's server-held Ed25519 private key.
+    In production this step is done client-side by a hardware wallet or browser extension.
+    The challenge must have been issued by POST /auth/challenge for this DID.
+    """
+    import time
     actor = actors_module.get_actor(body.did)
     if not actor:
         raise HTTPException(404, detail=f"Unknown actor DID: {body.did}")
-    import secrets as _secrets
-    token = _secrets.token_hex(32)
-    actors_module._tokens[token] = body.did
-    return {"token": token, "did": body.did,
-            "actor": actor.to_public_dict(),
-            "note": "Demo token — no signature required. Use DIDAuth in production."}
-
-class DemoTokenRequest(BaseModel):
-    did: str
-
-@app.post("/admin/demo-token")
-def demo_token(body: DemoTokenRequest):
-    """Demo-only: issue a session token for any registered actor DID without DIDAuth."""
-    actor = actors_module.get_actor(body.did)
-    if not actor:
-        raise HTTPException(404, detail=f"Unknown actor DID: {body.did}")
-    import secrets as _secrets
-    token = _secrets.token_hex(32)
-    actors_module._tokens[token] = body.did
-    return {"token": token, "did": body.did,
-            "actor": actor.to_public_dict(),
-            "note": "Demo token — no signature required. Use DIDAuth in production."}
+    entry = actors_module._challenges.get(body.challenge)
+    if not entry or entry["did"] != body.did:
+        raise HTTPException(400, detail="Unknown or expired challenge for this DID.")
+    if time.time() > entry["expires"]:
+        actors_module._challenges.pop(body.challenge, None)
+        raise HTTPException(400, detail="Challenge expired. Request a new one.")
+    signature = actor.sign(body.challenge.encode())
+    return {"signature": signature, "did": body.did}
 
 @app.get("/actors")
 def list_actors():
@@ -776,3 +832,195 @@ def auth_verify(body: AuthVerifyRequest):
         "actor": actor.to_public_dict() if actor else None,
         "message": "Pass token as 'Authorization: Bearer <token>' on subsequent requests.",
     }
+
+# ── Actor registration ────────────────────────────────────────────────────────
+
+ROLE_MAP = {
+    "factory":   actors_module.TIER2_FACTORY,
+    "supplier":  actors_module.TIER2_SUPPLIER,
+    "logistics": actors_module.TIER2_LOGISTICS,
+    "certifier": actors_module.TIER1_CERTIFIER,
+    "recycler":  actors_module.TIER1_RECYCLER,
+    "regulator": actors_module.TIER1_REGULATOR,
+}
+TIER1_ROLES = {actors_module.TIER1_CERTIFIER, actors_module.TIER1_RECYCLER, actors_module.TIER1_REGULATOR}
+
+class RegisterRequest(BaseModel):
+    role: str            # factory | supplier | logistics | certifier | recycler | regulator
+    name: str
+    os_id: Optional[str] = None
+    email: Optional[str] = None
+
+@app.post("/register")
+def register_actor(body: RegisterRequest):
+    """
+    Self-service actor registration.
+    Tier 2 roles are activated immediately.
+    Tier 1 roles are placed in a pending queue for root approval.
+    Returns the private key ONCE — it is never stored server-side after this call.
+    """
+    role = ROLE_MAP.get(body.role)
+    if not role:
+        raise HTTPException(400, detail=f"Unknown role '{body.role}'. Valid: {list(ROLE_MAP.keys())}")
+
+    # Build DID
+    if body.os_id:
+        did = f"did:dpp:{body.os_id.lower()}"
+    else:
+        import secrets as _s
+        did = f"did:dpp:{body.role}-{_s.token_hex(4)}"
+
+    if did in actors_module.ACTOR_REGISTRY:
+        raise HTTPException(409, detail=f"Actor '{did}' already registered.")
+
+    root_did = "did:dpp:root-authority"
+    new_actor = actors_module._new_actor(did, body.name, role, approved_by=None)
+    private_key_b64 = new_actor.export_private_key_b64()
+
+    if role in TIER1_ROLES:
+        # Queue for approval — not added to registry yet
+        actors_module._pending_registrations.append({
+            "did":    did,
+            "name":   body.name,
+            "role":   role,
+            "email":  body.email,
+            "actor":  new_actor,
+            "submitted": datetime.now(timezone.utc).isoformat(),
+        })
+        _log("ACTOR_PENDING_APPROVAL", did, f"Tier1 registration: {role}")
+        return {
+            "status":      "pending",
+            "did":         did,
+            "name":        body.name,
+            "role":        role,
+            "private_key": private_key_b64,
+            "public_key":  new_actor.public_key_b64,
+            "note":        "Your account requires approval by the root authority. "
+                           "You will be notified when activated.",
+        }
+    else:
+        # Tier 2 — activate immediately
+        actors_module.ACTOR_REGISTRY[did] = new_actor
+        _log("ACTOR_REGISTERED", did, f"Tier2 self-registration: {role}")
+        # Issue a session token immediately
+        import secrets as _s
+        token = _s.token_hex(32)
+        actors_module._tokens[token] = did
+        return {
+            "status":      "active",
+            "did":         did,
+            "name":        body.name,
+            "role":        role,
+            "private_key": private_key_b64,
+            "public_key":  new_actor.public_key_b64,
+            "token":       token,
+            "actor":       new_actor.to_public_dict(),
+            "note":        "Registration complete. Save your private key — it is shown only once.",
+        }
+
+# ── Dashboard endpoints ───────────────────────────────────────────────────────
+
+@app.get("/dashboard/my-products")
+def my_products(_actor=Depends(require_auth)):
+    """Return all products issued by the authenticated actor's DID."""
+    result = []
+    for product_id, stages in lifecycle_store.items():
+        if any(s.get("issuer_did") == _actor.did for s in stages):
+            result.append({
+                "product_id":    product_id,
+                "stage_count":   len(stages),
+                "current_stage": stages[-1]["stage"] if stages else "Unknown",
+                "issued_date":   stages[0]["date"] if stages else None,
+                "has_warning":   not all(
+                    not status_list.lookup_by_credential_id(s.get("credential_id", ""))[1]
+                    for s in stages
+                ),
+            })
+    return {"actor": _actor.to_public_dict(), "products": result, "total": len(result)}
+
+@app.get("/dashboard/recent-activity")
+def recent_activity(_actor=Depends(require_auth), limit: int = Query(20, ge=1, le=100)):
+    """Return recent audit log entries for this actor."""
+    entries = [e for e in reversed(audit_log) if e.get("actor_did") == _actor.did]
+    return {"entries": entries[:limit]}
+
+# ── Key rotation ──────────────────────────────────────────────────────────────
+
+@app.post("/actors/{did:path}/rotate-key")
+def rotate_key(did: str, _actor=Depends(require_auth)):
+    """
+    Rotate the keypair for the authenticated actor's own DID only.
+    Returns the new private key once. Old credentials remain valid (signed with old key).
+    """
+    if _actor.did != did:
+        raise HTTPException(403, detail="You can only rotate your own keys.")
+    actor = actors_module.get_actor(did)
+    if not actor:
+        raise HTTPException(404, detail="Actor not found.")
+    new_private_key_b64 = actor.rotate_key()
+    # Invalidate all existing tokens for this actor (force re-login with new key)
+    to_remove = [t for t, d in actors_module._tokens.items() if d == did]
+    for t in to_remove:
+        del actors_module._tokens[t]
+    _log("KEY_ROTATED", did, "Keypair rotated; all sessions invalidated")
+    return {
+        "did":         did,
+        "new_public_key": actor.public_key_b64,
+        "new_private_key": new_private_key_b64,
+        "note":        "New private key shown once. All previous sessions have been invalidated. "
+                       "Old credentials remain valid — they were signed with the previous key.",
+    }
+
+# ── Admin endpoints (Tier 0 only) ────────────────────────────────────────────
+
+def require_root(_actor=Depends(require_auth)):
+    if _actor.role != actors_module.TIER0_ROOT:
+        raise HTTPException(403, detail="Root authority access required.")
+    return _actor
+
+@app.get("/admin/pending-approvals")
+def admin_pending(_actor=Depends(require_root)):
+    return {
+        "pending": [
+            {k: v for k, v in p.items() if k != "actor"}
+            for p in actors_module._pending_registrations
+        ],
+        "total": len(actors_module._pending_registrations),
+    }
+
+@app.post("/admin/approve/{did:path}")
+def admin_approve(did: str, _actor=Depends(require_root)):
+    for i, p in enumerate(actors_module._pending_registrations):
+        if p["did"] == did:
+            new_actor = p["actor"]
+            new_actor.approved_by = _actor.did
+            actors_module.ACTOR_REGISTRY[did] = new_actor
+            actors_module._pending_registrations.pop(i)
+            _log("ACTOR_APPROVED", _actor.did, f"Approved {did}")
+            return {"approved": did, "actor": new_actor.to_public_dict()}
+    raise HTTPException(404, detail=f"No pending registration for DID: {did}")
+
+@app.post("/admin/reject/{did:path}")
+def admin_reject(did: str, _actor=Depends(require_root)):
+    for i, p in enumerate(actors_module._pending_registrations):
+        if p["did"] == did:
+            actors_module._pending_registrations.pop(i)
+            _log("ACTOR_REJECTED", _actor.did, f"Rejected {did}")
+            return {"rejected": did}
+    raise HTTPException(404, detail=f"No pending registration for DID: {did}")
+
+@app.get("/admin/audit-log")
+def admin_audit_log(limit: int = Query(50, ge=1, le=500), _actor=Depends(require_root)):
+    return {"entries": list(reversed(audit_log))[:limit], "total": len(audit_log)}
+
+@app.post("/admin/revoke-actor/{did:path}")
+def admin_revoke_actor(did: str, _actor=Depends(require_root)):
+    """Remove an actor from the registry and invalidate all their tokens."""
+    if did not in actors_module.ACTOR_REGISTRY:
+        raise HTTPException(404, detail=f"Actor not found: {did}")
+    del actors_module.ACTOR_REGISTRY[did]
+    to_remove = [t for t, d in actors_module._tokens.items() if d == did]
+    for t in to_remove:
+        del actors_module._tokens[t]
+    _log("ACTOR_REVOKED", _actor.did, f"Actor removed from registry: {did}")
+    return {"revoked_actor": did, "sessions_cleared": len(to_remove)}

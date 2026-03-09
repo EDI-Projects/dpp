@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import api, { getStoredActor } from '../../../../lib/api'
 
-const STAGE_TYPES = [
+const ALL_STAGE_TYPES = [
   'Material Sourcing',
   'Certification',
   'Custody Transfer',
@@ -13,13 +13,25 @@ const STAGE_TYPES = [
   'End of Life',
 ]
 
-const DEFAULT_ISSUERS = {
-  'Material Sourcing':  'did:dpp:supplier-rawmat',
-  'Certification':      'did:dpp:certifier-intertek',
-  'Custody Transfer':   'did:dpp:logistics-dhl',
-  'Ownership':          null,
-  'Repair':             null,
-  'End of Life':        'did:dpp:recycler-veolia',
+// Which stages each actor role is authorised to issue
+const ROLE_STAGES = {
+  'tier0_root':      ALL_STAGE_TYPES,
+  'tier1_regulator': ALL_STAGE_TYPES,
+  'tier1_certifier': ['Certification'],
+  'tier1_recycler':  ['End of Life'],
+  'tier2_factory':   ['Custody Transfer', 'Ownership', 'Repair'],
+  'tier2_supplier':  ['Material Sourcing'],
+  'tier2_logistics': ['Custody Transfer'],
+}
+
+const ROLE_LABELS = {
+  'tier0_root':      'Root Authority',
+  'tier1_regulator': 'EU Regulator',
+  'tier1_certifier': 'Certifier',
+  'tier1_recycler':  'Recycler',
+  'tier2_factory':   'Factory',
+  'tier2_supplier':  'Supplier',
+  'tier2_logistics': 'Logistics',
 }
 
 const ENDPOINT_MAP = {
@@ -152,9 +164,6 @@ function MaterialSourcingForm({ productId, form, setForm, suggestions }) {
           <Input name="farm_name" value={form.farm_name || ''} onChange={e => setForm(f => ({ ...f, farm_name: e.target.value }))} />
         </Field>
       </div>
-      <Field label="Issuer DID">
-        <Input name="issuer_did" value={form.issuer_did || DEFAULT_ISSUERS['Material Sourcing']} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
     </div>
   )
 }
@@ -187,9 +196,7 @@ function CertificationForm({ form, setForm }) {
           <Input name="scope" value={form.scope || ''} onChange={e => setForm(f => ({ ...f, scope: e.target.value }))} />
         </Field>
       </div>
-      <Field label="Issuer DID">
-        <Input name="issuer_did" value={form.issuer_did || DEFAULT_ISSUERS['Certification']} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
+      {/* issuer determined server-side from Bearer token */}
     </div>
   )
 }
@@ -261,9 +268,6 @@ function CustodyTransferForm({ form, setForm }) {
           />
         </Field>
       </div>
-      <Field label="Issuer DID">
-        <Input name="issuer_did" value={form.issuer_did || DEFAULT_ISSUERS['Custody Transfer']} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
     </div>
   )
 }
@@ -299,9 +303,6 @@ function OwnershipForm({ form, setForm }) {
           />
         </Field>
       </div>
-      <Field label="Issuer DID (optional)">
-        <Input name="issuer_did" value={form.issuer_did || ''} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
     </div>
   )
 }
@@ -371,9 +372,6 @@ function RepairForm({ form, setForm }) {
           className="w-full border border-gray-200 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
         />
       </Field>
-      <Field label="Issuer DID (optional)">
-        <Input name="issuer_did" value={form.issuer_did || ''} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
     </div>
   )
 }
@@ -440,9 +438,6 @@ function EndOfLifeForm({ form, setForm }) {
           />
         </Field>
       </div>
-      <Field label="Issuer DID">
-        <Input name="issuer_did" value={form.issuer_did || DEFAULT_ISSUERS['End of Life']} onChange={e => setForm(f => ({ ...f, issuer_did: e.target.value }))} />
-      </Field>
     </div>
   )
 }
@@ -451,20 +446,21 @@ export default function AddStagePage() {
   const { id } = useParams()
   const router = useRouter()
   const [actor, setActor] = useState(null)
-  const [stageType, setStageType] = useState('Material Sourcing')
+  const [stageType, setStageType] = useState(null)
   const [form, setForm] = useState({})
   const [suggestions, setSuggestions] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
-  // Check auth on mount
-  useEffect(() => { setActor(getStoredActor()) }, [])
-
-  // Pre-populate issuer_did when stage type changes
+  // Check auth on mount and set default stage based on role
   useEffect(() => {
-    const defaultDid = DEFAULT_ISSUERS[stageType]
-    setForm(f => ({ ...f, issuer_did: defaultDid || '' }))
-  }, [stageType])
+    const a = getStoredActor()
+    setActor(a)
+    if (a) {
+      const allowed = ROLE_STAGES[a.role] || []
+      if (allowed.length > 0) setStageType(allowed[0])
+    }
+  }, [])
 
   // Fetch material suggestions from existing lifecycle data for the product
   useEffect(() => {
@@ -493,6 +489,8 @@ export default function AddStagePage() {
 
     const endpoint = ENDPOINT_MAP[stageType]
     const payload = { product_id: id, ...form }
+    // issuer_did is determined server-side from the Bearer token — do not send
+    delete payload.issuer_did
 
     // Coerce boolean strings
     for (const key of ['certified', 'product_still_in_use', 'right_to_repair_compliant', 'second_life_eligible', 'eu_espr_compliant']) {
@@ -517,14 +515,16 @@ export default function AddStagePage() {
     }
   }
 
-  const StageForm = {
+  const allowedStages = actor ? (ROLE_STAGES[actor.role] || []) : []
+
+  const StageForm = stageType ? {
     'Material Sourcing':  <MaterialSourcingForm productId={id} form={form} setForm={setForm} suggestions={suggestions} />,
     'Certification':      <CertificationForm form={form} setForm={setForm} />,
     'Custody Transfer':   <CustodyTransferForm form={form} setForm={setForm} />,
     'Ownership':          <OwnershipForm form={form} setForm={setForm} />,
     'Repair':             <RepairForm form={form} setForm={setForm} />,
     'End of Life':        <EndOfLifeForm form={form} setForm={setForm} />,
-  }[stageType]
+  }[stageType] : null
 
   return (
     <div className="max-w-2xl">
@@ -535,28 +535,46 @@ export default function AddStagePage() {
       <h1 className="text-2xl font-semibold mb-1">Add Lifecycle Stage</h1>
       <p className="text-xs text-gray-400 font-mono mb-6">{id}</p>
 
-      {!actor && (
+      {!actor ? (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 text-sm text-amber-800">
-          You must sign in before issuing credentials. Use the <strong>Sign in</strong> selector in the header.
+          You must <strong>sign in</strong> before issuing credentials. Use the selector in the header.
+        </div>
+      ) : allowedStages.length === 0 ? (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-sm text-red-800">
+          Your role <strong>{actor.role}</strong> is not authorised to issue any lifecycle stage credentials.
+        </div>
+      ) : (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6 flex items-center gap-3 text-sm">
+          <span className="text-blue-700 font-medium">{actor.name}</span>
+          <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded font-medium">
+            {ROLE_LABELS[actor.role] || actor.role}
+          </span>
+          <span className="text-blue-500 text-xs">
+            Can issue: {allowedStages.join(', ')}
+          </span>
         </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <Field label="Stage Type">
-            <Select
-              name="stage_type"
-              value={stageType}
-              onChange={e => { setStageType(e.target.value); setForm({}) }}
-              options={STAGE_TYPES.map(s => ({ value: s, label: s }))}
-            />
-          </Field>
-        </div>
+        {allowedStages.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <Field label="Stage Type">
+              <Select
+                name="stage_type"
+                value={stageType || ''}
+                onChange={e => { setStageType(e.target.value); setForm({}) }}
+                options={allowedStages.map(s => ({ value: s, label: s }))}
+              />
+            </Field>
+          </div>
+        )}
 
-        <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <h2 className="font-medium text-sm mb-4">{stageType} Details</h2>
-          {StageForm}
-        </div>
+        {StageForm && (
+          <div className="bg-white border border-gray-200 rounded-lg p-5">
+            <h2 className="font-medium text-sm mb-4">{stageType} Details</h2>
+            {StageForm}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
@@ -567,7 +585,7 @@ export default function AddStagePage() {
         <div className="flex gap-3">
           <button
             type="submit"
-            disabled={submitting || !actor}
+            disabled={submitting || !actor || allowedStages.length === 0}
             className="bg-blue-600 text-white text-sm rounded px-5 py-2 hover:bg-blue-700 transition-colors disabled:opacity-60"
           >
             {submitting ? 'Issuing credential…' : !actor ? 'Sign in to issue' : 'Issue Credential'}

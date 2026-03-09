@@ -1,12 +1,20 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import api, { getStoredActor, setStoredToken, clearStoredToken } from '../../lib/api'
+import api, { getStoredActor, setStoredToken, clearStoredToken, didLogin } from '../../lib/api'
 
 const TIER_COLORS = {
-  0: 'bg-red-100 text-red-800',
   1: 'bg-blue-100 text-blue-800',
   2: 'bg-gray-100 text-gray-600',
+}
+
+const ROLE_LABELS = {
+  'tier1_certifier': 'Certifier',
+  'tier1_recycler':  'Recycler',
+  'tier1_regulator': 'Regulator',
+  'tier2_factory':   'Factory',
+  'tier2_supplier':  'Supplier',
+  'tier2_logistics': 'Logistics',
 }
 
 export default function SessionBar() {
@@ -19,7 +27,8 @@ export default function SessionBar() {
   useEffect(() => {
     setActor(getStoredActor())
     api.get('/actors').then(r => {
-      const list = r.data.actors || []
+      // Exclude Tier 0 root authority — not a user-facing role
+      const list = (r.data.actors || []).filter(a => a.tier !== 0)
       setActors(list)
       if (!selectedDid && list.length > 0) setSelectedDid(list[0].did)
     }).catch(() => {})
@@ -30,11 +39,10 @@ export default function SessionBar() {
     setLoading(true)
     setError(null)
     try {
-      const res = await api.post('/admin/demo-token', { did: selectedDid })
-      setStoredToken(res.data.token, res.data.actor)
-      setActor(res.data.actor)
+      const data = await didLogin(selectedDid)
+      setActor(data.actor)
     } catch (err) {
-      setError(err.response?.data?.detail || 'Login failed')
+      setError(err.response?.data?.detail || 'Auth failed')
     } finally {
       setLoading(false)
     }
@@ -46,13 +54,18 @@ export default function SessionBar() {
   }
 
   if (actor) {
+    const isElevated = actor.role === 'tier0_root' || actor.role === 'tier1_regulator'
     return (
       <div className="flex items-center gap-3 text-xs">
-        <span className="text-gray-400">Signed in as</span>
-        <span className="font-medium text-gray-700">{actor.name}</span>
+        <a href="/dashboard" className="font-medium text-gray-700 hover:text-blue-600">{actor.name}</a>
         <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${TIER_COLORS[actor.tier] || 'bg-gray-100 text-gray-600'}`}>
-          Tier {actor.tier}
+          {ROLE_LABELS[actor.role] || actor.role}
         </span>
+        {isElevated && (
+          <a href="/admin" className="text-red-600 border border-red-200 rounded px-2 py-0.5 hover:bg-red-50 font-medium">
+            Admin
+          </a>
+        )}
         <button
           onClick={handleLogout}
           className="text-gray-400 hover:text-gray-700 border border-gray-200 rounded px-2 py-0.5 hover:bg-gray-50"
@@ -72,7 +85,9 @@ export default function SessionBar() {
         className="border border-gray-200 rounded px-2 py-1 text-xs bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
       >
         {actors.map(a => (
-          <option key={a.did} value={a.did}>{a.name} (Tier {a.tier})</option>
+          <option key={a.did} value={a.did}>
+            {a.name} · {ROLE_LABELS[a.role] || a.role}
+          </option>
         ))}
       </select>
       <button
@@ -82,6 +97,7 @@ export default function SessionBar() {
       >
         {loading ? 'Signing in…' : 'Sign in'}
       </button>
+      <a href="/login" className="text-xs text-blue-600 hover:underline">Full sign-in →</a>
     </div>
   )
 }

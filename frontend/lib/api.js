@@ -14,6 +14,18 @@ api.interceptors.request.use(config => {
   return config
 })
 
+// On 401, clear stale token so the UI resets to the sign-in state
+api.interceptors.response.use(
+  r => r,
+  err => {
+    if (err.response?.status === 401 && typeof window !== 'undefined') {
+      localStorage.removeItem('dpp_token')
+      localStorage.removeItem('dpp_actor')
+    }
+    return Promise.reject(err)
+  }
+)
+
 export function getStoredActor() {
   if (typeof window === 'undefined') return null
   try { return JSON.parse(localStorage.getItem('dpp_actor') || 'null') } catch { return null }
@@ -29,11 +41,19 @@ export function clearStoredToken() {
   localStorage.removeItem('dpp_actor')
 }
 
-/** Request a demo session token for the given actor DID */
-export async function demoLogin(did) {
-  const res = await api.post('/admin/demo-token', { did })
-  setStoredToken(res.data.token, res.data.actor)
-  return res.data
+/**
+ * DIDAuth login: challenge → sign (server-side wallet) → verify.
+ * Proves identity by Ed25519 signature without exposing the private key.
+ */
+export async function didLogin(did) {
+  // 1. Request a challenge nonce for this DID
+  const { data: { challenge } } = await api.post('/auth/challenge', { did })
+  // 2. Sign the challenge (server-side wallet — in production this is a client wallet)
+  const { data: { signature } } = await api.post('/auth/sign', { did, challenge })
+  // 3. Verify the signature; backend issues a session token
+  const { data } = await api.post('/auth/verify', { did, challenge, signature })
+  setStoredToken(data.token, data.actor)
+  return data
 }
 
 export default api

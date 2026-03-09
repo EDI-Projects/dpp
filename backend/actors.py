@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, PublicFormat, PrivateFormat, NoEncryption
+)
 from cryptography.exceptions import InvalidSignature
 
 
@@ -88,6 +90,16 @@ class Actor:
         except (InvalidSignature, Exception):
             return False
 
+    def export_private_key_b64(self) -> str:
+        """Return raw Ed25519 private key as base64. Only call once during registration/rotation."""
+        raw = self._private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        return base64.b64encode(raw).decode()
+
+    def rotate_key(self) -> str:
+        """Generate a new keypair in-place. Returns new private key as base64 (one-time)."""
+        self._private_key = Ed25519PrivateKey.generate()
+        return self.export_private_key_b64()
+
     def can_issue(self, vc_type: str) -> bool:
         perms = ROLE_PERMISSIONS.get(self.role, [])
         return "*" in perms or vc_type in perms
@@ -124,6 +136,8 @@ DEMO_RECYCLER_DID   = "did:dpp:recycler-veolia"
 DEMO_REGULATOR_DID  = "did:dpp:regulator-eu-espr"
 DEMO_SUPPLIER_DID   = "did:dpp:supplier-rawmat"
 DEMO_LOGISTICS_DID  = "did:dpp:logistics-dhl"
+DEMO_FACTORY_DID    = "did:dpp:factory-alpha"
+DEMO_FACTORY2_DID   = "did:dpp:factory-beta"
 
 
 def _bootstrap() -> None:
@@ -139,6 +153,8 @@ def _bootstrap() -> None:
     tier2 = [
         _new_actor(DEMO_SUPPLIER_DID,   "Raw Material Supplier",   TIER2_SUPPLIER,   _ROOT_DID),
         _new_actor(DEMO_LOGISTICS_DID,  "DHL Supply Chain",        TIER2_LOGISTICS,  _ROOT_DID),
+        _new_actor(DEMO_FACTORY_DID,    "Alpha Manufacturing Co.",  TIER2_FACTORY,    _ROOT_DID),
+        _new_actor(DEMO_FACTORY2_DID,   "Beta Industries Ltd.",     TIER2_FACTORY,    _ROOT_DID),
     ]
     for a in tier1 + tier2:
         ACTOR_REGISTRY[a.did] = a
@@ -172,6 +188,7 @@ def require_actor(did: str, vc_type: str) -> Actor:
 
 _challenges: dict[str, dict] = {}   
 _tokens: dict[str, str] = {}
+_pending_registrations: list[dict] = []   # tier1 actors awaiting root approval
 
 
 def create_challenge(did: str) -> str:
