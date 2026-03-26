@@ -69,13 +69,13 @@ export default function SettingsPage() {
       {/* Key rotation form */}
       {!result ? (
         <div className="bg-white border border-orange-200 rounded-2xl p-6">
-          <h2 className="font-semibold text-gray-900 mb-2">🔑 Rotate Keypair</h2>
+          <h2 className="font-semibold text-gray-900 mb-2">Rotate Keypair</h2>
           <p className="text-sm text-gray-500 mb-4">
             Generates a new Ed25519 keypair. Your existing credentials remain valid — they were signed with your current key.
             All active sessions will be invalidated and you will need to sign in again.
           </p>
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4 text-sm text-amber-800">
-            <p className="font-semibold mb-1">⚠️ Before you rotate:</p>
+            <p className="font-semibold mb-1">Before you rotate:</p>
             <ul className="space-y-1 text-xs">
               <li>• Save your new private key immediately — it is shown only once</li>
               <li>• You will be signed out of all devices</li>
@@ -110,7 +110,6 @@ export default function SettingsPage() {
         /* Success */
         <div className="bg-white border border-green-200 rounded-2xl p-6 space-y-5">
           <div className="text-center">
-            <div className="text-4xl mb-2">🔐</div>
             <h2 className="font-bold text-lg text-gray-900">Key rotated successfully</h2>
             <p className="text-sm text-gray-500 mt-1">{result.note}</p>
           </div>
@@ -121,7 +120,7 @@ export default function SettingsPage() {
             </p>
           </div>
           <div>
-            <p className="text-xs font-semibold text-amber-700 mb-1">⚠️ New private key (save now — shown once)</p>
+            <p className="text-xs font-semibold text-amber-700 mb-1">New private key (save now — shown once)</p>
             <p className="font-mono text-xs bg-amber-50 rounded-lg p-3 break-all border border-amber-200 text-gray-700 mb-2">
               {result.new_private_key}
             </p>

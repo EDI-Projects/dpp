@@ -63,7 +63,6 @@ export default function DashboardPage() {
 
   if (loading) return (
     <div className="max-w-2xl mx-auto mt-16 text-center">
-      <div className="text-3xl mb-3 animate-pulse">⚙️</div>
       <p className="text-gray-500">Loading your dashboard…</p>
     </div>
   )
@@ -99,26 +98,22 @@ export default function DashboardPage() {
 
       {/* Quick actions */}
       <div className="grid grid-cols-2 gap-3 mb-8">
-        {actor?.role?.startsWith('tier2_factory') && (
+        {(actor?.role === 'tier2_factory') && (
           <a href="/product/new" className="rounded-xl border border-gray-200 bg-white p-4 hover:bg-blue-50 hover:border-blue-200 transition-colors">
-            <div className="text-2xl mb-2">📋</div>
             <div className="font-medium text-sm">Issue Birth Certificate</div>
             <div className="text-xs text-gray-500 mt-0.5">Register a new product</div>
           </a>
         )}
         <a href="/actors" className="rounded-xl border border-gray-200 bg-white p-4 hover:bg-gray-50 transition-colors">
-          <div className="text-2xl mb-2">🏭</div>
           <div className="font-medium text-sm">Browse Factories</div>
           <div className="text-xs text-gray-500 mt-0.5">View all factory products</div>
         </a>
         <a href={`/verify/new`} onClick={e => { e.preventDefault(); const id = window.prompt('Enter product ID to verify:'); if(id) router.push(`/verify/${encodeURIComponent(id)}`) }}
           className="rounded-xl border border-gray-200 bg-white p-4 hover:bg-gray-50 transition-colors cursor-pointer">
-          <div className="text-2xl mb-2">🔍</div>
           <div className="font-medium text-sm">Verify a Product</div>
           <div className="text-xs text-gray-500 mt-0.5">Scan or enter product ID</div>
         </a>
         <a href="/dashboard/settings" className="rounded-xl border border-gray-200 bg-white p-4 hover:bg-gray-50 transition-colors">
-          <div className="text-2xl mb-2">🔑</div>
           <div className="font-medium text-sm">Key Rotation</div>
           <div className="text-xs text-gray-500 mt-0.5">Rotate your signing key</div>
         </a>
@@ -132,7 +127,6 @@ export default function DashboardPage() {
         </div>
         {products.length === 0 ? (
           <div className="text-center py-10 text-gray-400 bg-white rounded-xl border border-gray-200">
-            <div className="text-3xl mb-2">📦</div>
             <p className="text-sm">No products issued yet</p>
           </div>
         ) : (
@@ -145,7 +139,7 @@ export default function DashboardPage() {
                   <p className="text-xs text-gray-500">{STAGE_LABELS[p.current_stage] || p.current_stage} · {p.stage_count} stage{p.stage_count !== 1 ? 's' : ''}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {p.has_warning && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">⚠️ Issue</span>}
+                  {p.has_warning && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">Issue</span>}
                   <span className="text-gray-400 text-sm">→</span>
                 </div>
               </a>

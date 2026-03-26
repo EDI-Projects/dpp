@@ -465,12 +465,13 @@ export default function AddStagePage() {
   // Fetch material suggestions from existing lifecycle data for the product
   useEffect(() => {
     if (stageType !== 'Material Sourcing') return
-    // Try to get factory from lifecycle data, fall back to empty list
+    // Birth certificate stage is stored as 'Manufactured' in the backend
     api.get(`/product/${id}/lifecycle`)
       .then(r => {
         const lc = r.data?.lifecycle || []
-        const birth = lc.find(e => e.stage === 'Birth Certificate')
-        const osId = birth?.credential?.credentialSubject?.os_id
+        const birth = lc.find(e => e.stage === 'Manufactured')
+        // os_id is nested inside credentialSubject.manufacturer
+        const osId = birth?.credential?.credentialSubject?.manufacturer?.os_id
         if (osId) {
           return api.get(`/suggest-materials/${osId}`)
         }

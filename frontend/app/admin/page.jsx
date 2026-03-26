@@ -80,7 +80,6 @@ export default function AdminPage() {
 
   if (loading) return (
     <div className="max-w-2xl mx-auto mt-16 text-center">
-      <div className="text-3xl mb-3 animate-pulse">🛡️</div>
       <p className="text-gray-500">Loading admin panel…</p>
     </div>
   )

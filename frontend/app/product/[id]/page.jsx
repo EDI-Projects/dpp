@@ -55,14 +55,24 @@ function CredentialCard({ entry }) {
 
       {vc?.credentialSubject && (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-          {Object.entries(vc.credentialSubject).map(([k, v]) => (
-            typeof v !== 'object' && (
+          {Object.entries(vc.credentialSubject).map(([k, v]) => {
+            if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+              return Object.entries(v).map(([sk, sv]) => (
+                typeof sv !== 'object' && (
+                  <div key={`${k}.${sk}`} className="contents">
+                    <dt className="text-gray-400 capitalize pl-2">↳ {k.replace(/_/g, ' ')} {sk.replace(/_/g, ' ')}</dt>
+                    <dd className="truncate">{String(sv)}</dd>
+                  </div>
+                )
+              ))
+            }
+            return (
               <div key={k} className="contents">
                 <dt className="text-gray-500 capitalize">{k.replace(/_/g, ' ')}</dt>
                 <dd className="truncate">{String(v)}</dd>
               </div>
             )
-          ))}
+          })}
         </dl>
       )}
 

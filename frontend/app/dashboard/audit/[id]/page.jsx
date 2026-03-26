@@ -43,7 +43,7 @@ function RevokePanel({ cred, actor, onRevoked }) {
 
   return (
     <div className="bg-white border border-red-200 rounded-xl p-4">
-      <h3 className="font-semibold text-red-800 mb-3">⚠️ Revoke Credential</h3>
+      <h3 className="font-semibold text-red-800 mb-3">Revoke Credential</h3>
       <input
         value={reason} onChange={e => setReason(e.target.value)}
         placeholder="Reason for revocation (optional)"
@@ -78,7 +78,6 @@ export default function AuditPage() {
   const [verifyData, setVerify] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
-  // id could be a product_id or credential_id — try both
   const isProductId = !id?.includes('urn:')
 
   useEffect(() => { setActor(getStoredActor()) }, [])
@@ -100,14 +99,17 @@ export default function AuditPage() {
 
   if (loading) return (
     <div className="max-w-2xl mx-auto mt-16 text-center">
-      <div className="text-3xl mb-3 animate-pulse">🔬</div>
       <p className="text-gray-500">Loading audit data…</p>
     </div>
   )
 
   return (
     <div className="max-w-2xl">
-      <a href="/dashboard" className="text-sm text-blue-600 hover:underline mb-4 inline-block">&larr; Dashboard</a>
+      <div className="flex flex-wrap gap-4 mb-4">
+        <a href="/dashboard" className="text-sm text-blue-600 hover:underline">← Dashboard</a>
+        <a href={`/verify/${encodeURIComponent(id)}`} className="text-sm text-blue-600 hover:underline">← Product Passport</a>
+        <a href={`/product/${encodeURIComponent(id)}`} className="text-sm text-blue-600 hover:underline">← Lifecycle Timeline</a>
+      </div>
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Technical Audit Report</h1>
       <p className="text-xs text-gray-400 font-mono mb-6 break-all">{id}</p>
 
@@ -120,7 +122,6 @@ export default function AuditPage() {
           {/* Summary */}
           <div className={`rounded-xl p-5 border ${verifyData.overall_valid ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
             <div className="flex items-center gap-3">
-              <span className="text-2xl">{verifyData.overall_valid ? '✅' : '❌'}</span>
               <div>
                 <p className={`font-bold ${verifyData.overall_valid ? 'text-green-800' : 'text-red-800'}`}>
                   {verifyData.overall_valid ? 'Credential chain VALID' : 'Credential chain INVALID'}

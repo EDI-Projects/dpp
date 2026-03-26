@@ -55,7 +55,6 @@ export default function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <div className="text-4xl mb-3">🔑</div>
           <h1 className="text-2xl font-bold text-gray-900">Create an account</h1>
           <p className="text-sm text-gray-500 mt-1">Register as an actor in the DPP ecosystem</p>
         </div>
@@ -157,7 +156,7 @@ export default function RegisterPage() {
           {step === 3 && result && (
             <div className="space-y-5">
               <div className="text-center">
-                <div className="text-4xl mb-2">{result.status === 'active' ? '🎉' : '⏳'}</div>
+                <div className="text-4xl mb-2">{result.status === 'active' ? '✅' : '⏳'}</div>
                 <h2 className="font-bold text-lg text-gray-900">
                   {result.status === 'active' ? 'Registration complete!' : 'Pending approval'}
                 </h2>
@@ -169,7 +168,7 @@ export default function RegisterPage() {
                 <div className="flex justify-between"><span className="text-gray-500">Status</span><span className={result.status === 'active' ? 'text-green-700 font-medium' : 'text-yellow-700 font-medium'}>{result.status}</span></div>
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                <p className="text-sm font-semibold text-amber-800 mb-2">⚠️ Save your private key now</p>
+                <p className="text-sm font-semibold text-amber-800 mb-2">Save your private key now</p>
                 <p className="text-xs text-amber-700 mb-3">This key is shown once and never stored. You need it to sign credentials.</p>
                 <div className="bg-white rounded-lg p-3 font-mono text-xs text-gray-700 break-all border border-amber-200 mb-3">
                   {result.private_key}

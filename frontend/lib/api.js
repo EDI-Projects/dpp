@@ -5,7 +5,6 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Attach stored Bearer token to every request
 api.interceptors.request.use(config => {
   if (typeof window !== 'undefined') {
     const token = window.localStorage.getItem('dpp_token')
@@ -14,7 +13,6 @@ api.interceptors.request.use(config => {
   return config
 })
 
-// On 401, clear stale token so the UI resets to the sign-in state
 api.interceptors.response.use(
   r => r,
   err => {
@@ -41,16 +39,9 @@ export function clearStoredToken() {
   localStorage.removeItem('dpp_actor')
 }
 
-/**
- * DIDAuth login: challenge → sign (server-side wallet) → verify.
- * Proves identity by Ed25519 signature without exposing the private key.
- */
 export async function didLogin(did) {
-  // 1. Request a challenge nonce for this DID
   const { data: { challenge } } = await api.post('/auth/challenge', { did })
-  // 2. Sign the challenge (server-side wallet — in production this is a client wallet)
   const { data: { signature } } = await api.post('/auth/sign', { did, challenge })
-  // 3. Verify the signature; backend issues a session token
   const { data } = await api.post('/auth/verify', { did, challenge, signature })
   setStoredToken(data.token, data.actor)
   return data
