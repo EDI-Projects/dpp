@@ -76,6 +76,9 @@ class LifecycleStage(Base):
     vc_type = Column(String(128), nullable=False)
     created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
     vc_payload = Column(JSONB, nullable=False)
+    # IPFS + Polygon anchoring (nullable for backward compat with pre-existing rows)
+    ipfs_cid = Column(String(256), nullable=True)
+    tx_hash = Column(String(128), nullable=True)
 
 
 class CredentialStatus(Base):
@@ -89,13 +92,13 @@ class CredentialStatus(Base):
     is_revoked = Column(Boolean, nullable=False, default=False)
     revoked_at = Column(TIMESTAMPTZ)
     revoked_by = Column(String(128))
+    revoked_tx_hash = Column(String(128), nullable=True)
+    ipfs_cid = Column(String(256), nullable=True)
     created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
-# StatusListBit: reserved for future DB-backed bitset storage of the W3C Status List 2021.
-# Currently, status_list.py manages an in-memory bitset. This table is a placeholder
-# for when that module is migrated to persistent storage.
 class StatusListBit(Base):
+    """DB-backed bitset storage for W3C StatusList2021."""
     __tablename__ = "status_list_bits"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

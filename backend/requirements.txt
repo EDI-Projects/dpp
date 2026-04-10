@@ -18,8 +18,7 @@ typing_extensions==4.15.0
 uvicorn==0.41.0
 cryptography==45.0.1
 httpx==0.28.1
-
-# PostgreSQL / SQLAlchemy
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 alembic==1.14.1
+web3>=6.0,<8.0
