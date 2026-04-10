@@ -175,6 +175,50 @@ export default function AuditPage() {
                 ))}
               </div>
 
+              {/* IPFS + Polygon anchoring details */}
+              {(c.ipfs_cid || c.tx_hash || c.polygon_anchor) && (
+                <div className="px-5 pb-4">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">On-Chain Anchoring</p>
+                  <div className="space-y-2">
+                    {c.ipfs_cid && (
+                      <div className="flex items-center gap-2 bg-blue-50 rounded-lg p-3">
+                        <span className="text-xs text-gray-500 shrink-0">IPFS CID:</span>
+                        <a href={`https://gateway.pinata.cloud/ipfs/${c.ipfs_cid}`}
+                           target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-blue-600 hover:underline font-mono truncate">
+                          {c.ipfs_cid}
+                        </a>
+                      </div>
+                    )}
+                    {c.tx_hash && (
+                      <div className="flex items-center gap-2 bg-purple-50 rounded-lg p-3">
+                        <span className="text-xs text-gray-500 shrink-0">Polygon Tx:</span>
+                        <a href={`https://amoy.polygonscan.com/tx/${c.tx_hash}`}
+                           target="_blank" rel="noopener noreferrer"
+                           className="text-xs text-purple-600 hover:underline font-mono truncate">
+                          {c.tx_hash}
+                        </a>
+                      </div>
+                    )}
+                    {c.polygon_anchor && (
+                      <div className={`rounded-lg p-3 ${c.polygon_anchor.revoked ? 'bg-red-50' : 'bg-green-50'}`}>
+                        <p className="text-xs font-medium">
+                          {c.polygon_anchor.revoked
+                            ? `⚠️ Revoked on-chain: ${c.polygon_anchor.revoke_reason || 'No reason provided'}`
+                            : `✅ Anchored on-chain at block timestamp ${c.polygon_anchor.anchored_at}`
+                          }
+                        </p>
+                        {c.polygon_anchor.ipfs_cid && c.ipfs_cid && c.polygon_anchor.ipfs_cid !== c.ipfs_cid && (
+                          <p className="text-xs text-red-600 font-bold mt-1">
+                            🚨 CID MISMATCH: On-chain CID ({c.polygon_anchor.ipfs_cid}) differs from local ({c.ipfs_cid})
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Trust signals */}
               {c.trust_signals?.field_signals && (
                 <div className="px-5 pb-4">

@@ -76,6 +76,26 @@ function CredentialCard({ entry }) {
         </dl>
       )}
 
+      {/* IPFS + Polygon anchoring */}
+      {(entry.ipfs_cid || entry.tx_hash) && (
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          {entry.ipfs_cid && (
+            <a href={`https://gateway.pinata.cloud/ipfs/${entry.ipfs_cid}`}
+               target="_blank" rel="noopener noreferrer"
+               className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200">
+              IPFS
+            </a>
+          )}
+          {entry.tx_hash && (
+            <a href={`https://amoy.polygonscan.com/tx/${entry.tx_hash}`}
+               target="_blank" rel="noopener noreferrer"
+               className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200">
+              Polygon
+            </a>
+          )}
+        </div>
+      )}
+
       {expanded && (
         <pre className="mt-3 text-xs bg-white border border-gray-200 rounded p-3 overflow-auto max-h-64 whitespace-pre-wrap text-gray-700">
           {JSON.stringify(vc, null, 2)}

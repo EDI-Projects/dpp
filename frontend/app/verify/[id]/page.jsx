@@ -146,6 +146,39 @@ function StepCard({ cred, lifecycleEntry, index, total }) {
                 ))}
               </dl>
             )}
+            {/* IPFS + Polygon anchoring info */}
+            {(cred.ipfs_cid || cred.tx_hash || cred.polygon_anchor) && (
+              <div className="rounded-lg bg-gray-50 border border-gray-100 p-3 space-y-1.5">
+                <p className="text-xs font-semibold text-gray-600">🔗 On-chain anchoring</p>
+                {cred.ipfs_cid && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-400">IPFS:</span>
+                    <a href={`https://gateway.pinata.cloud/ipfs/${cred.ipfs_cid}`}
+                       target="_blank" rel="noopener noreferrer"
+                       className="text-xs text-blue-600 hover:underline font-mono truncate">
+                      {cred.ipfs_cid}
+                    </a>
+                  </div>
+                )}
+                {cred.tx_hash && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-400">Polygon:</span>
+                    <a href={`https://amoy.polygonscan.com/tx/${cred.tx_hash}`}
+                       target="_blank" rel="noopener noreferrer"
+                       className="text-xs text-purple-600 hover:underline font-mono truncate">
+                      {cred.tx_hash.slice(0, 10)}…{cred.tx_hash.slice(-8)}
+                    </a>
+                  </div>
+                )}
+                {cred.checks?.polygon_verified != null && (
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-xs font-medium ${cred.checks.polygon_verified ? 'text-green-700' : 'text-red-600'}`}>
+                      {cred.checks.polygon_verified ? 'On-chain verified' : 'On-chain mismatch'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
             {trust === 'fail' && cred.checks && (
               <div>
                 <p className="text-xs font-semibold text-red-700 mb-1">Failed checks</p>
