@@ -2,25 +2,19 @@
 Digital Product Passport — FastAPI backend
 
 Trust tiers:
-  Tier 0  Root authority (multi-sig HSM in production — future work)
+  Tier 0  Root authority
   Tier 1  Verified third parties: certifiers, recyclers, regulators
   Tier 2  Dataset-anchored actors: factories, suppliers, logistics
 
-Future production architecture:
-  - Shamir's Secret Sharing key recovery for Tier 0 root
-  - HSM-backed key storage for all tiers
-  - National accreditation body API integration (Tier 1 approval)
-  - Full multi-sig threshold credentials
-  - IoT-verified trust signals (automated sensor attestation)
-  - On-chain audit log anchoring (Polygon CID registry)
-  - IPFS payload storage via Pinata
-  - PostgreSQL persistence + audit log table
+All state persisted in PostgreSQL. Credentials pinned to IPFS via Pinata
+and anchored on Polygon Amoy testnet.
 """
 
 from __future__ import annotations
 import json
 import os
 import uuid
+import secrets
 from datetime import datetime, timezone, date as date_type
 from pydantic import BaseModel
 from typing import Optional
@@ -35,25 +29,22 @@ from models import (
 )
 import actors as actors_module
 import status_list
+import pinata
+import polygon
 from actors import (
     DEMO_CERTIFIER_DID, DEMO_RECYCLER_DID,
     DEMO_SUPPLIER_DID, DEMO_LOGISTICS_DID,
     DEMO_FACTORY_DID,
 )
 
-# Database imports - optional, falls back to in-memory if not available
-try:
-    from sqlalchemy.orm import Session
-    from database.connection import get_db, init_db, DB_AVAILABLE
-    from database.models import (
-        Product, LifecycleStage, FactoryProduct, AuditLogEntry,
-        CredentialStatus, StatusListMeta
-    )
-except ImportError:
-    DB_AVAILABLE = False
-    Session = None
+from sqlalchemy.orm import Session
+from database.connection import get_db, init_db, SessionLocal
+from database.models import (
+    Product, LifecycleStage, FactoryProduct, AuditLogEntry,
+    CredentialStatus, StatusListMeta, AuthToken,
+)
 
-app = FastAPI(title="Digital Product Passport API", version="2.0.0")
+app = FastAPI(title="Digital Product Passport API", version="3.0.0")
 
 CORS_ORIGIN = os.getenv("CORS_ORIGIN", "http://localhost:3000")
 
@@ -70,17 +61,15 @@ MATERIALS_PATH = os.getenv("MATERIALS_PATH", "../data/MOCK_DATA (3).csv")
 PRODUCTION_PATH = os.getenv("PRODUCTION_PATH", "../data/y1AQEIpMTR2j7xgr9MH0_Manufacturing Dataset.csv")
 
 
-# Initialize database on startup
 @app.on_event("startup")
 def startup_event():
-    if DB_AVAILABLE:
-        init_db()
+    init_db()
+
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
 
 def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)):
-    """Dependency: validate Bearer token issued by POST /auth/verify (DIDAuth)."""
     if not creds or not creds.credentials:
         raise HTTPException(401, detail="Authentication required. "
             "Obtain a token via POST /auth/challenge → /auth/sign → /auth/verify.")
@@ -90,36 +79,68 @@ def require_auth(creds: HTTPAuthorizationCredentials = Security(_bearer)):
     return actor
 
 
-def get_db_session() -> Session | None:
-    """Get a database session if DB is available."""
-    if DB_AVAILABLE:
-        from database.connection import SessionLocal
-        if SessionLocal:
-            return SessionLocal()
-    return None
-
-
 def _log(event: str, actor_did: str = None, detail: str = None, product_id: str = None):
-    """Log an audit event to database or in-memory fallback."""
-    if DB_AVAILABLE:
-        db = get_db_session()
-        if db:
-            try:
-                entry = AuditLogEntry(
-                    ts=datetime.now(timezone.utc),
-                    event=event,
-                    actor_did=actor_did,
-                    product_id=product_id,
-                    detail=detail,
-                )
-                db.add(entry)
-                db.commit()
-            finally:
-                db.close()
-    else:
-        # In-memory fallback (not persisted)
-        pass
+    db = SessionLocal()
+    try:
+        entry = AuditLogEntry(
+            ts=datetime.now(timezone.utc),
+            event=event,
+            actor_did=actor_did,
+            product_id=product_id,
+            detail=detail,
+        )
+        db.add(entry)
+        db.commit()
+    finally:
+        db.close()
 
+
+# ── IPFS + Polygon helper ───────────────────────────────────────────────────
+
+def _anchor_credential(credential_id: str, vc_payload: dict, vc_type: str) -> tuple[Optional[str], Optional[str]]:
+    """Pin to IPFS and anchor on Polygon. Returns (ipfs_cid, tx_hash)."""
+    ipfs_cid = pinata.pin_json(credential_id, vc_payload)
+    tx_hash = None
+    if ipfs_cid:
+        tx_hash = polygon.anchor_credential(credential_id, ipfs_cid, vc_type)
+    return ipfs_cid, tx_hash
+
+
+def _save_stage(db: Session, product_id: str, stage: str, stage_date,
+                issuer_did: str, issuer_name: str, credential_id: str,
+                vc_type: str, vc_payload: dict, current_stage: str = None):
+    """Create LifecycleStage row, pin to IPFS, anchor on Polygon."""
+    ipfs_cid, tx_hash = _anchor_credential(credential_id, vc_payload, vc_type)
+
+    ls = LifecycleStage(
+        product_id=product_id,
+        stage=stage,
+        stage_date=_parse_date(stage_date) if isinstance(stage_date, str) else stage_date,
+        issuer_did=issuer_did,
+        issuer_name=issuer_name,
+        credential_id=credential_id,
+        vc_type=vc_type,
+        vc_payload=vc_payload,
+        ipfs_cid=ipfs_cid,
+        tx_hash=tx_hash,
+    )
+    db.add(ls)
+
+    if current_stage:
+        db.query(Product).filter(Product.product_id == product_id).update(
+            {"current_stage": current_stage})
+
+    # Update credential status with CID
+    if ipfs_cid:
+        db.query(CredentialStatus).filter(
+            CredentialStatus.credential_id == credential_id
+        ).update({"ipfs_cid": ipfs_cid})
+
+    db.commit()
+    return ipfs_cid, tx_hash
+
+
+# ── Data helpers ─────────────────────────────────────────────────────────────
 
 CATEGORY_MATERIAL_MAP: dict[str, list[str]] = {
     "Apparel":              ["fabric", "leather"],
@@ -147,7 +168,6 @@ FACTORY_CSV_FIELDS  = {"name", "address", "country_code", "country_name", "secto
                        "product_type", "facility_type", "lat", "lng"}
 MATERIAL_CSV_FIELDS = {"raw_material_id", "supplier", "supplier_location",
                        "cost_per_unit", "description"}
-
 
 
 def load_factories() -> pd.DataFrame:
@@ -214,34 +234,36 @@ def parse_worker_count(raw) -> int:
 def make_did(identifier: str) -> str:
     return f"did:dpp:{identifier.lower().replace(' ', '-')}"
 
-def _get_lifecycle_stages(product_id: str, db: Session = None) -> list[dict]:
-    """Get lifecycle stages for a product from DB or fallback."""
-    if DB_AVAILABLE and db:
-        stages = db.query(LifecycleStage).filter(LifecycleStage.product_id == product_id).order_by(LifecycleStage.created_at).all()
-        return [
-            {
-                "stage": s.stage,
-                "date": s.stage_date.isoformat() if s.stage_date else None,
-                "issuer": s.issuer_name,
-                "issuer_did": s.issuer_did,
-                "credential_id": s.credential_id,
-                "credential": s.vc_payload,
-            }
-            for s in stages
-        ]
-    return []
+
+def _get_lifecycle_stages(product_id: str, db: Session) -> list[dict]:
+    stages = db.query(LifecycleStage).filter(
+        LifecycleStage.product_id == product_id
+    ).order_by(LifecycleStage.created_at).all()
+    return [
+        {
+            "stage": s.stage,
+            "date": s.stage_date.isoformat() if s.stage_date else None,
+            "issuer": s.issuer_name,
+            "issuer_did": s.issuer_did,
+            "credential_id": s.credential_id,
+            "credential": s.vc_payload,
+            "ipfs_cid": s.ipfs_cid,
+            "tx_hash": s.tx_hash,
+        }
+        for s in stages
+    ]
+
 
 def get_stage_names(product_id: str) -> list[str]:
-    db = get_db_session()
-    if db:
-        try:
-            stages = _get_lifecycle_stages(product_id, db)
-            return [s["stage"] for s in stages]
-        finally:
-            db.close()
-    return []
+    db = SessionLocal()
+    try:
+        stages = _get_lifecycle_stages(product_id, db)
+        return [s["stage"] for s in stages]
+    finally:
+        db.close()
 
-def _parse_date(d: str):
+
+def _parse_date(d):
     try:
         return date_type.fromisoformat(str(d)[:10])
     except Exception:
@@ -267,6 +289,7 @@ def _build_trust_signals(subject: dict, csv_fields: set, actor) -> dict:
         "approved_by":     actor.approved_by if actor else None,
         "field_signals":   field_signals,
     }
+
 
 def make_vc(issuer_did: str, subject: dict, vc_type: str,
             csv_fields: set = None, product_id: str = "") -> dict:
@@ -320,14 +343,15 @@ def make_vc(issuer_did: str, subject: dict, vc_type: str,
         }
     return vc
 
+
 def validate_chain(product_id: str, required_prefix: str,
                    new_date: str = None,
                    issuer_did: str = None,
                    vc_type: str = None) -> None:
-    db = get_db_session()
+    db = SessionLocal()
     try:
         stages = get_stage_names(product_id)
-        existing = _get_lifecycle_stages(product_id, db) if db else []
+        existing = _get_lifecycle_stages(product_id, db)
 
         if not stages:
             raise HTTPException(422,
@@ -354,8 +378,8 @@ def validate_chain(product_id: str, required_prefix: str,
             except ValueError as exc:
                 raise HTTPException(403, detail=str(exc))
     finally:
-        if db:
-            db.close()
+        db.close()
+
 
 def bridge_product_context(os_id: str, product_category: str) -> dict:
     bridge: dict = {}
@@ -386,6 +410,9 @@ def bridge_product_context(os_id: str, product_category: str) -> dict:
         pass
     return bridge
 
+
+# ── Factory endpoints ────────────────────────────────────────────────────────
+
 @app.get("/factories")
 def list_factories(limit: int = Query(20, ge=1, le=200)):
     df = load_factories()
@@ -410,13 +437,10 @@ def get_factory(os_id: str):
 
 @app.get("/factories/{os_id}/products")
 def get_factory_products(os_id: str):
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            fp_entries = db.query(FactoryProduct).filter(FactoryProduct.os_id == os_id).all()
-            product_ids = [fp.product_id for fp in fp_entries]
-        else:
-            product_ids = []
+        fp_entries = db.query(FactoryProduct).filter(FactoryProduct.os_id == os_id).all()
+        product_ids = [fp.product_id for fp in fp_entries]
 
         result = []
         for pid in product_ids:
@@ -429,8 +453,7 @@ def get_factory_products(os_id: str):
             })
         return {"os_id": os_id, "total": len(result), "products": result}
     finally:
-        if db:
-            db.close()
+        db.close()
 
 @app.get("/suggest-materials/{os_id}")
 def suggest_materials(os_id: str, limit: int = Query(5, ge=1, le=20)):
@@ -472,6 +495,9 @@ def get_production_stats(os_id: str, limit: int = Query(10, ge=1, le=50)):
             "mapped_prod_type": prod_type, "total_runs": int(len(subset)),
             "averages": agg, "recent_runs": recent.to_dict(orient="records")}
 
+
+# ── Credential issuance endpoints ────────────────────────────────────────────
+
 @app.post("/issue-birth-certificate/{os_id}")
 def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     if not _actor.can_issue("ProductBirthCertificate"):
@@ -491,7 +517,6 @@ def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     serial_no  = f"SN-{os_id[-6:]}-{datetime.now().strftime('%Y%m%d')}"
     product_id = f"urn:product:{category.lower().replace(' ', '-')}:{serial_no}"
 
-    # Register factory actor for traceability but sign with the authenticated actor
     actors_module.get_or_create_factory_actor(os_id, f.get("name", ""))
     issuer_did = _actor.did
 
@@ -522,62 +547,33 @@ def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
     vc = make_vc(issuer_did, subject, "ProductBirthCertificate",
                  csv_fields=FACTORY_CSV_FIELDS, product_id=product_id)
 
-    entry = {
-        "stage":         "Manufactured",
-        "date":          subject["manufacture_date"],
-        "issuer":        f.get("name", ""),
-        "issuer_did":    issuer_did,
-        "credential_id": vc["id"],
-        "credential":    vc,
-    }
-
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            # Create product record
-            product = Product(
-                product_id=product_id,
-                os_id=os_id,
-                category=category,
-                current_stage="Manufactured",
-            )
-            db.add(product)
+        product = Product(
+            product_id=product_id, os_id=os_id,
+            category=category, current_stage="Manufactured",
+        )
+        db.add(product)
+        fp = FactoryProduct(os_id=os_id, product_id=product_id)
+        db.add(fp)
+        db.flush()
 
-            # Create lifecycle stage
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage="Manufactured",
-                stage_date=date_type.fromisoformat(subject["manufacture_date"]),
-                issuer_did=issuer_did,
-                issuer_name=f.get("name", ""),
-                credential_id=vc["id"],
-                vc_type="ProductBirthCertificate",
-                vc_payload=vc,
-            )
-            db.add(stage)
-
-            # Create factory_products link
-            fp = FactoryProduct(os_id=os_id, product_id=product_id)
-            db.add(fp)
-
-            db.commit()
-        else:
-            # In-memory fallback removed for simplicity
-            pass
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, "Manufactured", subject["manufacture_date"],
+            issuer_did, f.get("name", ""), vc["id"],
+            "ProductBirthCertificate", vc, "Manufactured")
     finally:
-        if db:
-            db.close()
+        db.close()
 
-    _log("CREDENTIAL_ISSUED", issuer_did, f"ProductBirthCertificate", product_id)
-    return {"product_id": product_id, "credential": vc}
+    _log("CREDENTIAL_ISSUED", issuer_did, "ProductBirthCertificate", product_id)
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/material-sourcing")
 def add_material_sourcing(record: MaterialSourcingRecord, _actor=Depends(require_auth)):
     if not _actor.can_issue("MaterialSourcingCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue MaterialSourcingCredential. "
-            f"Sign in as a supplier actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue MaterialSourcingCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
     validate_chain(product_id, "", new_date=record.sourcing_date,
@@ -586,52 +582,38 @@ def add_material_sourcing(record: MaterialSourcingRecord, _actor=Depends(require
                  "MaterialSourcingCredential",
                  csv_fields=MATERIAL_CSV_FIELDS, product_id=product_id)
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage="Material Sourcing",
-                stage_date=_parse_date(record.sourcing_date),
-                issuer_did=issuer_did,
-                issuer_name=record.certifying_body,
-                credential_id=vc["id"],
-                vc_type="MaterialSourcingCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-
-            # Update product current_stage
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": "Material Sourcing"})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, "Material Sourcing", record.sourcing_date,
+            issuer_did, record.certifying_body, vc["id"],
+            "MaterialSourcingCredential", vc, "Material Sourcing")
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "MaterialSourcingCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/certification")
 def add_certification(record: CertificationRecord, _actor=Depends(require_auth)):
     if not _actor.can_issue("CertificationCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue CertificationCredential. "
-            f"Sign in as a certifier actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue CertificationCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
 
-    db = get_db_session()
-    try:
-        if not record.sourcing_id and DB_AVAILABLE and db:
+    # Auto-derive sourcing_id from chain if not provided
+    if not record.sourcing_id:
+        db = SessionLocal()
+        try:
             for e in reversed(_get_lifecycle_stages(product_id, db)):
                 if "Material Sourcing" in e.get("stage", ""):
                     record.sourcing_id = e.get("credential_id", "auto")
                     break
             else:
                 record.sourcing_id = "auto"
-    finally:
-        if db:
+        finally:
             db.close()
 
     validate_chain(product_id, "", new_date=record.audit_date,
@@ -639,49 +621,36 @@ def add_certification(record: CertificationRecord, _actor=Depends(require_auth))
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
                  "CertificationCredential", product_id=product_id)
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage="Certification",
-                stage_date=_parse_date(record.audit_date),
-                issuer_did=issuer_did,
-                issuer_name=record.certifying_body,
-                credential_id=vc["id"],
-                vc_type="CertificationCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": "Certification"})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, "Certification", record.audit_date,
+            issuer_did, record.certifying_body, vc["id"],
+            "CertificationCredential", vc, "Certification")
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "CertificationCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/custody-transfer")
 def add_custody_transfer(record: CustodyTransfer, _actor=Depends(require_auth)):
     if not _actor.can_issue("CustodyTransferCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue CustodyTransferCredential. "
-            f"Sign in as a logistics or factory actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue CustodyTransferCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
 
-    db = get_db_session()
-    try:
-        if record.transfer_sequence is None and DB_AVAILABLE and db:
+    if record.transfer_sequence is None:
+        db = SessionLocal()
+        try:
             existing_transfers = sum(
                 1 for e in _get_lifecycle_stages(product_id, db)
                 if e.get("stage", "").startswith("Transfer")
             )
             record.transfer_sequence = existing_transfers + 1
-    finally:
-        if db:
+        finally:
             db.close()
 
     validate_chain(product_id, "", new_date=record.handover_date,
@@ -690,36 +659,24 @@ def add_custody_transfer(record: CustodyTransfer, _actor=Depends(require_auth)):
                  "CustodyTransferCredential", product_id=product_id)
     stage_label = f"Transfer {record.transfer_sequence}: {record.transfer_type}"
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage=stage_label,
-                stage_date=_parse_date(record.handover_date),
-                issuer_did=issuer_did,
-                issuer_name=record.from_actor_name,
-                credential_id=vc["id"],
-                vc_type="CustodyTransferCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": stage_label})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, stage_label, record.handover_date,
+            issuer_did, record.from_actor_name, vc["id"],
+            "CustodyTransferCredential", vc, stage_label)
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "CustodyTransferCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/ownership")
 def add_ownership(record: OwnershipRecord, _actor=Depends(require_auth)):
     if not _actor.can_issue("OwnershipCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue OwnershipCredential. "
-            f"Sign in as a factory actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue OwnershipCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
     validate_chain(product_id, "", new_date=record.ownership_start,
@@ -727,73 +684,50 @@ def add_ownership(record: OwnershipRecord, _actor=Depends(require_auth)):
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
                  "OwnershipCredential", product_id=product_id)
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage="Ownership / Usage",
-                stage_date=_parse_date(record.ownership_start),
-                issuer_did=issuer_did,
-                issuer_name="Ownership Registry",
-                credential_id=vc["id"],
-                vc_type="OwnershipCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": "Ownership / Usage"})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, "Ownership / Usage", record.ownership_start,
+            issuer_did, "Ownership Registry", vc["id"],
+            "OwnershipCredential", vc, "Ownership / Usage")
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "OwnershipCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/repair")
 def add_repair(record: RepairRecord, _actor=Depends(require_auth)):
     if not _actor.can_issue("RepairCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue RepairCredential. "
-            f"Sign in as a factory actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue RepairCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
     validate_chain(product_id, "", new_date=record.service_date,
                    issuer_did=issuer_did, vc_type="RepairCredential")
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
                  "RepairCredential", product_id=product_id)
+    stage_label = f"Repair: {record.service_type}"
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage=f"Repair: {record.service_type}",
-                stage_date=_parse_date(record.service_date),
-                issuer_did=issuer_did,
-                issuer_name=record.service_provider,
-                credential_id=vc["id"],
-                vc_type="RepairCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": f"Repair: {record.service_type}"})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, stage_label, record.service_date,
+            issuer_did, record.service_provider, vc["id"],
+            "RepairCredential", vc, stage_label)
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "RepairCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
+
 
 @app.post("/add-lifecycle-stage/end-of-life")
 def add_end_of_life(record: EndOfLifeRecord, _actor=Depends(require_auth)):
     if not _actor.can_issue("EndOfLifeCredential"):
-        raise HTTPException(403, detail=(
-            f"Role '{_actor.role}' cannot issue EndOfLifeCredential. "
-            f"Sign in as a recycler actor."
-        ))
+        raise HTTPException(403, detail=f"Role '{_actor.role}' cannot issue EndOfLifeCredential.")
     product_id = record.product_id
     issuer_did = _actor.did
     validate_chain(product_id, "", new_date=record.collection_date,
@@ -801,54 +735,40 @@ def add_end_of_life(record: EndOfLifeRecord, _actor=Depends(require_auth)):
     vc = make_vc(issuer_did, record.model_dump(exclude={"issuer_did"}),
                  "EndOfLifeCredential", product_id=product_id)
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            stage = LifecycleStage(
-                product_id=product_id,
-                stage="End of Life",
-                stage_date=_parse_date(record.collection_date),
-                issuer_did=issuer_did,
-                issuer_name=record.recycler_name,
-                credential_id=vc["id"],
-                vc_type="EndOfLifeCredential",
-                vc_payload=vc,
-            )
-            db.add(stage)
-            db.query(Product).filter(Product.product_id == product_id).update({"current_stage": "End of Life"})
-            db.commit()
+        ipfs_cid, tx_hash = _save_stage(
+            db, product_id, "End of Life", record.collection_date,
+            issuer_did, record.recycler_name, vc["id"],
+            "EndOfLifeCredential", vc, "End of Life")
     finally:
-        if db:
-            db.close()
+        db.close()
 
     _log("CREDENTIAL_ISSUED", issuer_did, "EndOfLifeCredential", product_id)
-    return {"product_id": product_id, "credential": vc}
+    return {"product_id": product_id, "credential": vc,
+            "ipfs_cid": ipfs_cid, "tx_hash": tx_hash}
 
+
+# ── Product lifecycle & verification ─────────────────────────────────────────
 
 @app.get("/product/{product_id}/lifecycle")
 def get_product_lifecycle(product_id: str):
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            lifecycle = _get_lifecycle_stages(product_id, db)
-            if not lifecycle:
-                raise HTTPException(404, detail="Product not found")
-            return {"product_id": product_id, "total_stages": len(lifecycle), "lifecycle": lifecycle}
-        else:
+        lifecycle = _get_lifecycle_stages(product_id, db)
+        if not lifecycle:
             raise HTTPException(404, detail="Product not found")
+        return {"product_id": product_id, "total_stages": len(lifecycle), "lifecycle": lifecycle}
     finally:
-        if db:
-            db.close()
+        db.close()
+
 
 @app.get("/product/{product_id}/verify")
 def verify_product(product_id: str):
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            lifecycle = _get_lifecycle_stages(product_id, db)
-            if not lifecycle:
-                raise HTTPException(404, detail="Product not found")
-        else:
+        lifecycle = _get_lifecycle_stages(product_id, db)
+        if not lifecycle:
             raise HTTPException(404, detail="Product not found")
 
         credentials_report = []
@@ -881,13 +801,21 @@ def verify_product(product_id: str):
             issuer_registered = actor is not None
             issuer_role_ok    = actor.can_issue(vc_type) if actor else False
 
-            # Check 4: temporal ordering vs previous stage
+            # Check 4: temporal ordering
             temporal_ok = True
             if i > 0:
                 prev_d = _parse_date(lifecycle[i - 1].get("date", ""))
                 this_d = _parse_date(entry.get("date", ""))
                 if prev_d and this_d and this_d < prev_d:
                     temporal_ok = False
+
+            # Check 5: on-chain anchor verification
+            polygon_verified = None
+            anchor_data = polygon.verify_anchor(cid) if cid else None
+            if anchor_data:
+                ipfs_cid = entry.get("ipfs_cid", "")
+                polygon_verified = (anchor_data.get("ipfs_cid") == ipfs_cid
+                                    and not anchor_data.get("revoked", False))
 
             checks = {
                 "signature_valid":   sig_ok,
@@ -896,12 +824,17 @@ def verify_product(product_id: str):
                 "issuer_role_valid": issuer_role_ok,
                 "temporal_order":    temporal_ok,
             }
+            if polygon_verified is not None:
+                checks["polygon_verified"] = polygon_verified
+
             errors = []
             if not sig_ok:            errors.append("Signature could not be verified")
             if revoked:               errors.append("Credential has been revoked")
             if not issuer_registered: errors.append(f"Issuer '{issuer_did}' not in actor registry")
             if not issuer_role_ok:    errors.append("Issuer role not authorised for this credential type")
             if not temporal_ok:       errors.append("Stage date precedes previous stage date")
+            if polygon_verified is False:
+                errors.append("On-chain anchor mismatch — possible tampering")
 
             cred_valid = not revoked and issuer_registered and temporal_ok
             if not cred_valid:
@@ -919,6 +852,9 @@ def verify_product(product_id: str):
                 "checks":       checks,
                 "errors":       errors,
                 "trust_signals": vc.get("trustSignals", {}),
+                "ipfs_cid":     entry.get("ipfs_cid"),
+                "tx_hash":      entry.get("tx_hash"),
+                "polygon_anchor": anchor_data,
             })
 
         return {
@@ -926,11 +862,16 @@ def verify_product(product_id: str):
             "overall_valid":     overall_valid,
             "total_credentials": len(lifecycle),
             "credentials":       credentials_report,
+            "integrations": {
+                "ipfs_enabled": pinata.is_available(),
+                "polygon_enabled": polygon.is_available(),
+            },
         }
     finally:
-        if db:
-            db.close()
+        db.close()
 
+
+# ── Status list & revocation ─────────────────────────────────────────────────
 
 @app.get("/status-list")
 def get_status_list():
@@ -950,46 +891,39 @@ def revoke_credential(credential_id: str, body: RevokeRequest = RevokeRequest(),
     if idx is None:
         raise HTTPException(404, detail="Credential not found in status list")
 
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        # Find the credential entry
-        entry = None
-        if DB_AVAILABLE and db:
-            stage = db.query(LifecycleStage).filter(LifecycleStage.credential_id == credential_id).first()
-            if stage:
-                entry = {
-                    "issuer_did": stage.issuer_did,
-                    "product_id": stage.product_id,
-                }
+        stage = db.query(LifecycleStage).filter(LifecycleStage.credential_id == credential_id).first()
+        entry = {"issuer_did": stage.issuer_did, "product_id": stage.product_id} if stage else {}
 
-        # Revocation is restricted to: Tier 0 root, Tier 1 regulator, or the original credential issuer
-        is_elevated = _actor.can_issue("*")  # True for tier0 root and tier1 regulator
-        is_original_issuer = entry and entry.get("issuer_did") == _actor.did
+        is_elevated = _actor.can_issue("*")
+        is_original_issuer = entry.get("issuer_did") == _actor.did
         if not is_elevated and not is_original_issuer:
             raise HTTPException(403, detail=(
                 f"Role '{_actor.role}' cannot revoke this credential. "
-                f"Only the original issuer ({entry.get('issuer_did', 'unknown') if entry else 'unknown'}) "
+                f"Only the original issuer ({entry.get('issuer_did', 'unknown')}) "
                 f"or a Tier 0/1 authority can revoke credentials."
             ))
 
         status_list.revoke(idx)
 
-        # Update credential_status in DB
-        if DB_AVAILABLE and db:
-            db.query(CredentialStatus).filter(CredentialStatus.credential_id == credential_id).update({
-                "is_revoked": True,
-                "revoked_at": datetime.now(timezone.utc),
-                "revoked_by": _actor.did,
-            })
-            db.commit()
+        # Anchor revocation on-chain
+        revoke_tx = polygon.anchor_revocation(credential_id, body.reason or "Revoked")
 
-        _log("CREDENTIAL_REVOKED", _actor.did, f"Revoked: {credential_id}", entry.get("product_id") if entry else None)
+        db.query(CredentialStatus).filter(CredentialStatus.credential_id == credential_id).update({
+            "is_revoked": True,
+            "revoked_at": datetime.now(timezone.utc),
+            "revoked_by": _actor.did,
+            "revoked_tx_hash": revoke_tx,
+        })
+        db.commit()
+
+        _log("CREDENTIAL_REVOKED", _actor.did, f"Revoked: {credential_id}", entry.get("product_id"))
         return {"credential_id": credential_id, "revoked": True,
                 "reason": body.reason, "status_index": idx,
-                "revoked_by": _actor.did}
+                "revoked_by": _actor.did, "revoke_tx_hash": revoke_tx}
     finally:
-        if db:
-            db.close()
+        db.close()
 
 @app.get("/credentials/{credential_id}/status")
 def check_credential_status(credential_id: str):
@@ -998,53 +932,46 @@ def check_credential_status(credential_id: str):
         raise HTTPException(404, detail="Credential not found in status list")
     return {"credential_id": credential_id, "status_index": idx, "revoked": revoked}
 
+
+# ── IPFS endpoint ────────────────────────────────────────────────────────────
+
+@app.get("/ipfs/{cid}")
+def get_ipfs_content(cid: str):
+    """Retrieve pinned VC JSON from IPFS via Pinata gateway."""
+    data = pinata.get_json(cid)
+    if data is None:
+        raise HTTPException(404, detail=f"IPFS content not found for CID: {cid}")
+    return data
+
+
+# ── Auth endpoints ───────────────────────────────────────────────────────────
+
 class SignRequest(BaseModel):
     did: str
     challenge: str
 
 @app.post("/auth/sign")
 def auth_sign(body: SignRequest):
-    """
-    Demo wallet endpoint: signs a challenge with the actor's server-held Ed25519 private key.
-    In production this step is done client-side by a hardware wallet or browser extension.
-    The challenge must have been issued by POST /auth/challenge for this DID.
-    """
     import time
     actor = actors_module.get_actor(body.did)
     if not actor:
         raise HTTPException(404, detail=f"Unknown actor DID: {body.did}")
 
-    # Verify the challenge exists and belongs to this DID (DB-backed or in-memory)
-    challenge_found = False
-    if DB_AVAILABLE:
-        from database.connection import SessionLocal
-        from database.models import AuthChallenge
-        db = SessionLocal()
-        try:
-            db_challenge = db.query(AuthChallenge).filter(
-                AuthChallenge.nonce == body.challenge,
-                AuthChallenge.did == body.did,
-            ).first()
-            if db_challenge:
-                import time
-                if time.time() > db_challenge.expires_at.timestamp():
-                    db.delete(db_challenge)
-                    db.commit()
-                    raise HTTPException(400, detail="Challenge expired. Request a new one.")
-                challenge_found = True
-        finally:
-            db.close()
-    else:
-        entry = actors_module._challenges.get(body.challenge)
-        if entry and entry["did"] == body.did:
-            import time
-            if time.time() > entry["expires"]:
-                actors_module._challenges.pop(body.challenge, None)
-                raise HTTPException(400, detail="Challenge expired. Request a new one.")
-            challenge_found = True
-
-    if not challenge_found:
-        raise HTTPException(400, detail="Unknown or expired challenge for this DID.")
+    from database.models import AuthChallenge
+    db = SessionLocal()
+    try:
+        db_challenge = db.query(AuthChallenge).filter(
+            AuthChallenge.nonce == body.challenge,
+            AuthChallenge.did == body.did,
+        ).first()
+        if not db_challenge:
+            raise HTTPException(400, detail="Unknown or expired challenge for this DID.")
+        if time.time() > db_challenge.expires_at.timestamp():
+            db.delete(db_challenge)
+            db.commit()
+            raise HTTPException(400, detail="Challenge expired. Request a new one.")
+    finally:
+        db.close()
 
     signature = actor.sign(body.challenge.encode())
     return {"signature": signature, "did": body.did}
@@ -1096,6 +1023,7 @@ def auth_verify(body: AuthVerifyRequest):
         "message": "Pass token as 'Authorization: Bearer <token>' on subsequent requests.",
     }
 
+
 # ── Actor registration ────────────────────────────────────────────────────────
 
 ROLE_MAP = {
@@ -1109,34 +1037,25 @@ ROLE_MAP = {
 TIER1_ROLES = {actors_module.TIER1_CERTIFIER, actors_module.TIER1_RECYCLER, actors_module.TIER1_REGULATOR}
 
 class RegisterRequest(BaseModel):
-    role: str            # factory | supplier | logistics | certifier | recycler | regulator
+    role: str
     name: str
     os_id: Optional[str] = None
     email: Optional[str] = None
 
 @app.post("/register")
 def register_actor(body: RegisterRequest):
-    """
-    Self-service actor registration.
-    Tier 2 roles are activated immediately.
-    Tier 1 roles are placed in a pending queue for root approval.
-    Returns the private key ONCE — it is never stored server-side after this call.
-    """
     role = ROLE_MAP.get(body.role)
     if not role:
         raise HTTPException(400, detail=f"Unknown role '{body.role}'. Valid: {list(ROLE_MAP.keys())}")
 
-    # Build DID
     if body.os_id:
         did = f"did:dpp:{body.os_id.lower()}"
     else:
-        import secrets as _s
-        did = f"did:dpp:{body.role}-{_s.token_hex(4)}"
+        did = f"did:dpp:{body.role}-{secrets.token_hex(4)}"
 
     if actors_module.get_actor(did):
         raise HTTPException(409, detail=f"Actor '{did}' already registered.")
 
-    root_did = "did:dpp:root-authority"
     new_actor = actors_module._new_actor(did, body.name, role, approved_by=None)
     private_key_b64 = new_actor.export_private_key_b64()
 
@@ -1150,27 +1069,20 @@ def register_actor(body: RegisterRequest):
             "role":        role,
             "private_key": private_key_b64,
             "public_key":  new_actor.public_key_b64,
-            "note":        "Your account requires approval by the root authority. "
-                        "You will be notified when activated.",
+            "note":        "Your account requires approval by the root authority.",
         }
     else:
-        # Register Tier 2 directly
         actors_module.register_actor_direct(did, body.name, role, new_actor.public_key_b64)
         _log("ACTOR_REGISTERED", did, f"Tier2 self-registration: {role}")
-        import secrets as _s
-        token = _s.token_hex(32)
-        # Store token in DB if available, otherwise fall back to in-memory
-        if DB_AVAILABLE:
-            from database.connection import SessionLocal as _SL
-            from database.models import AuthToken as _AT
-            _db = _SL()
-            try:
-                _db.add(_AT(token=token, did=did))
-                _db.commit()
-            finally:
-                _db.close()
-        else:
-            actors_module._tokens[token] = did
+
+        token = secrets.token_hex(32)
+        db = SessionLocal()
+        try:
+            db.add(AuthToken(token=token, did=did))
+            db.commit()
+        finally:
+            db.close()
+
         return {
             "status":      "active",
             "did":         did,
@@ -1183,54 +1095,47 @@ def register_actor(body: RegisterRequest):
             "note":        "Registration complete. Save your private key — it is shown only once.",
         }
 
+
+# ── Dashboard & admin ────────────────────────────────────────────────────────
+
 @app.get("/dashboard/my-products")
 def my_products(_actor=Depends(require_auth)):
-    db = get_db_session()
+    db = SessionLocal()
     try:
+        stages = db.query(LifecycleStage).filter(LifecycleStage.issuer_did == _actor.did).all()
+        product_ids = set(s.product_id for s in stages)
         result = []
-        if DB_AVAILABLE and db:
-            # Find all products where this actor issued any credential
-            stages = db.query(LifecycleStage).filter(LifecycleStage.issuer_did == _actor.did).all()
-            product_ids = set(s.product_id for s in stages)
-
-            for product_id in product_ids:
-                product_stages = _get_lifecycle_stages(product_id, db)
-                has_revoked = any(
-                    status_list.lookup_by_credential_id(s.get("credential_id", ""))[1]
-                    for s in product_stages
-                )
-                result.append({
-                    "product_id":    product_id,
-                    "stage_count":   len(product_stages),
-                    "current_stage": product_stages[-1]["stage"] if product_stages else "Unknown",
-                    "issued_date":   product_stages[0]["date"] if product_stages else None,
-                    "has_warning":   has_revoked,
-                })
+        for product_id in product_ids:
+            product_stages = _get_lifecycle_stages(product_id, db)
+            has_revoked = any(
+                status_list.lookup_by_credential_id(s.get("credential_id", ""))[1]
+                for s in product_stages
+            )
+            result.append({
+                "product_id":    product_id,
+                "stage_count":   len(product_stages),
+                "current_stage": product_stages[-1]["stage"] if product_stages else "Unknown",
+                "issued_date":   product_stages[0]["date"] if product_stages else None,
+                "has_warning":   has_revoked,
+            })
         return {"actor": _actor.to_public_dict(), "products": result, "total": len(result)}
     finally:
-        if db:
-            db.close()
+        db.close()
 
 @app.get("/dashboard/recent-activity")
 def recent_activity(_actor=Depends(require_auth), limit: int = Query(20, ge=1, le=100)):
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            entries = db.query(AuditLogEntry).filter(AuditLogEntry.actor_did == _actor.did).order_by(AuditLogEntry.ts.desc()).limit(limit).all()
-            return {"entries": [
-                {
-                    "ts": e.ts.isoformat() if e.ts else None,
-                    "event": e.event,
-                    "actor_did": e.actor_did,
-                    "product_id": e.product_id,
-                    "detail": e.detail,
-                }
-                for e in entries
-            ]}
-        return {"entries": []}
+        entries = db.query(AuditLogEntry).filter(
+            AuditLogEntry.actor_did == _actor.did
+        ).order_by(AuditLogEntry.ts.desc()).limit(limit).all()
+        return {"entries": [
+            {"ts": e.ts.isoformat() if e.ts else None, "event": e.event,
+             "actor_did": e.actor_did, "product_id": e.product_id, "detail": e.detail}
+            for e in entries
+        ]}
     finally:
-        if db:
-            db.close()
+        db.close()
 
 @app.post("/actors/{did:path}/rotate-key")
 def rotate_key(did: str, _actor=Depends(require_auth)):
@@ -1240,17 +1145,13 @@ def rotate_key(did: str, _actor=Depends(require_auth)):
     if not actor:
         raise HTTPException(404, detail="Actor not found.")
     new_private_key_b64 = actor.rotate_key()
-
-    # Invalidate all tokens for this actor
     count = actors_module.invalidate_actor_tokens(did)
-
     _log("KEY_ROTATED", did, "Keypair rotated; all sessions invalidated")
     return {
         "did":         did,
         "new_public_key": actor.public_key_b64,
         "new_private_key": new_private_key_b64,
-        "note":        "New private key shown once. All previous sessions have been invalidated. "
-                    "Old credentials remain valid — they were signed with the previous key.",
+        "note":        "New private key shown once. All previous sessions have been invalidated.",
     }
 
 def require_root(_actor=Depends(require_auth)):
@@ -1260,11 +1161,8 @@ def require_root(_actor=Depends(require_auth)):
 
 @app.get("/admin/pending-approvals")
 def admin_pending(_actor=Depends(require_root)):
-    pending = actors_module.get_pending_registrations()
-    return {
-        "pending": pending,
-        "total": len(pending),
-    }
+    return {"pending": actors_module.get_pending_registrations(),
+            "total": len(actors_module.get_pending_registrations())}
 
 @app.post("/admin/approve/{did:path}")
 def admin_approve(did: str, _actor=Depends(require_root)):
@@ -1283,31 +1181,33 @@ def admin_reject(did: str, _actor=Depends(require_root)):
 
 @app.get("/admin/audit-log")
 def admin_audit_log(limit: int = Query(50, ge=1, le=500), _actor=Depends(require_root)):
-    db = get_db_session()
+    db = SessionLocal()
     try:
-        if DB_AVAILABLE and db:
-            entries = db.query(AuditLogEntry).order_by(AuditLogEntry.ts.desc()).limit(limit).all()
-            return {"entries": [
-                {
-                    "ts": e.ts.isoformat() if e.ts else None,
-                    "event": e.event,
-                    "actor_did": e.actor_did,
-                    "product_id": e.product_id,
-                    "detail": e.detail,
-                }
-                for e in entries
-            ], "total": db.query(AuditLogEntry).count()}
-        return {"entries": [], "total": 0}
+        entries = db.query(AuditLogEntry).order_by(AuditLogEntry.ts.desc()).limit(limit).all()
+        return {"entries": [
+            {"ts": e.ts.isoformat() if e.ts else None, "event": e.event,
+             "actor_did": e.actor_did, "product_id": e.product_id, "detail": e.detail}
+            for e in entries
+        ], "total": db.query(AuditLogEntry).count()}
     finally:
-        if db:
-            db.close()
+        db.close()
 
 @app.post("/admin/revoke-actor/{did:path}")
 def admin_revoke_actor(did: str, _actor=Depends(require_root)):
-    """Remove an actor from the registry and invalidate all their tokens."""
     if not actors_module.get_actor(did):
         raise HTTPException(404, detail=f"Actor not found: {did}")
-
     actors_module.revoke_actor(did)
     _log("ACTOR_REVOKED", _actor.did, f"Actor removed from registry: {did}")
     return {"revoked_actor": did, "status": "revoked"}
+
+
+# ── Integration status ───────────────────────────────────────────────────────
+
+@app.get("/integrations/status")
+def integration_status():
+    """Report which external integrations are active."""
+    return {
+        "postgresql": True,
+        "ipfs_pinata": pinata.is_available(),
+        "polygon_amoy": polygon.is_available(),
+    }
