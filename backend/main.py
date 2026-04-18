@@ -26,6 +26,7 @@ import pandas as pd
 from models import (
     MaterialSourcingRecord, CertificationRecord, CustodyTransfer,
     OwnershipRecord, RepairRecord, EndOfLifeRecord,
+    MaterialMintRequest, ProductComposeRequest
 )
 import actors as actors_module
 import status_list
@@ -497,6 +498,86 @@ def get_production_stats(os_id: str, limit: int = Query(10, ge=1, le=50)):
 
 
 # ── Credential issuance endpoints ────────────────────────────────────────────
+
+@app.post("/mint-raw-material")
+def api_mint_raw_material(record: MaterialMintRequest, _actor=Depends(require_auth)):
+    if _actor.tier > 2:
+        raise HTTPException(403, detail="Not authorised to mint materials.")
+    
+    # 1. Mint on-chain tokens
+    token_id, tx_hash = polygon.mint_material(int(record.quantity_kg), record.metadata_uri)
+    
+    # 2. Create a VC representing this batch of raw materials
+    product_id = f"urn:material:{uuid.uuid4()}"
+    subject = {
+        "id": product_id,
+        "material_type": record.material_type,
+        "quantity_kg": record.quantity_kg,
+        "blockchain_token_id": token_id,
+        "blockchain_tx": tx_hash,
+        "mint_date": datetime.now(timezone.utc).isoformat(),
+        "extractor_did": _actor.did
+    }
+    vc = make_vc(_actor.did, subject, "RawMaterialCredential", product_id=product_id)
+    
+    db = SessionLocal()
+    try:
+        product = Product(
+            product_id=product_id, os_id="RAW_MATERIAL_ORIGIN",
+            category="RawMaterial", current_stage="Minted",
+        )
+        db.add(product)
+        db.flush()
+        
+        ipfs_cid, _ = _save_stage(
+            db, product_id, "Raw Material Minted", subject["mint_date"],
+            _actor.did, "Raw Material Origin", vc["id"],
+            "RawMaterialCredential", vc, "Minted")
+    finally:
+        db.close()
+        
+    _log("MATERIAL_MINTED", _actor.did, f"Token {token_id}", product_id)
+    return {"product_id": product_id, "token_id": token_id, "credential": vc, "tx_hash": tx_hash}
+
+@app.post("/compose-product")
+def api_compose_product(record: ProductComposeRequest, _actor=Depends(require_auth)):
+    token_id, tx_hash = polygon.compose_material(
+        record.consumed_token_ids, 
+        record.consumed_amounts, 
+        record.new_quantity, 
+        record.metadata_uri
+    )
+    product_id = f"urn:product:{uuid.uuid4()}"
+    subject = {
+        "id": product_id,
+        "product_type": record.new_product_type,
+        "quantity": record.new_quantity,
+        "consumed_tokens": record.consumed_token_ids,
+        "blockchain_token_id": token_id,
+        "blockchain_tx": tx_hash,
+        "compose_date": datetime.now(timezone.utc).isoformat(),
+        "manufacturer_did": _actor.did
+    }
+    vc = make_vc(_actor.did, subject, "ProductCompositionCredential", product_id=product_id)
+    
+    db = SessionLocal()
+    try:
+        product = Product(
+            product_id=product_id, os_id="COMPOSED_PRODUCT",
+            category=record.new_product_type, current_stage="Composed",
+        )
+        db.add(product)
+        db.flush()
+        
+        ipfs_cid, _ = _save_stage(
+            db, product_id, "Product Composed", subject["compose_date"],
+            _actor.did, "Manufacturer", vc["id"],
+            "ProductCompositionCredential", vc, "Composed")
+    finally:
+        db.close()
+        
+    _log("PRODUCT_COMPOSED", _actor.did, f"Token {token_id}", product_id)
+    return {"product_id": product_id, "token_id": token_id, "credential": vc, "tx_hash": tx_hash}
 
 @app.post("/issue-birth-certificate/{os_id}")
 def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):

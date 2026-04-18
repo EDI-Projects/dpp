@@ -25,6 +25,7 @@ export default function RootLayout({ children }) {
             
             <div className="hidden md:flex items-center gap-8 text-sm font-semibold text-gray-500 dark:text-gray-400">
               <a href="/actors" className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">Network Registry</a>
+              <a href="/mint-material" className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1.5"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Mint Material</a>
               <a href="/issue" className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1.5"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/></svg> Issue Passport</a>
               <a href="/dashboard" className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">Your Dashboard</a>
             </div>

@@ -56,6 +56,23 @@ function CredentialCard({ entry }) {
       {vc?.credentialSubject && (
         <dl className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs bg-white/60 p-3 rounded-xl border border-black/5">
           {Object.entries(vc.credentialSubject).map(([k, v]) => {
+            if (k === 'consumed_tokens' && Array.isArray(v)) {
+              return (
+                <div key={k} className="col-span-1 sm:col-span-2 mt-2 bg-indigo-50/50 p-3 rounded-lg border border-indigo-100">
+                  <dt className="text-indigo-800 font-bold mb-2 flex items-center gap-1.5">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                    Composition Graph: Blockchain Tokens Burned
+                  </dt>
+                  <dd className="flex flex-wrap gap-2">
+                    {v.map(tokenId => (
+                      <span key={tokenId} className="px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 font-mono text-xs font-bold rounded-md shadow-sm">
+                        Token BATCH-{tokenId}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+              )
+            }
             if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
               return Object.entries(v).map(([sk, sv]) => (
                 typeof sv !== 'object' && (
@@ -165,7 +182,14 @@ export default function ProductPage() {
             className="text-sm shadow-md shadow-indigo-500/20 primary-gradient-bg text-white rounded-xl px-4 py-2 hover:shadow-lg transition-all font-semibold flex items-center gap-1.5"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-            Add Stage
+            Add Tracking Stage
+          </a>
+          <a
+            href={`/compose`}
+            className="text-sm shadow-md shadow-purple-500/20 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl px-4 py-2 hover:shadow-lg transition-all font-semibold flex items-center gap-1.5"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+            Compose Product
           </a>
           <a
             href={`/verify/${encodeURIComponent(decodedId)}`}

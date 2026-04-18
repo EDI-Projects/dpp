@@ -28,6 +28,19 @@ class MaterialSourcingRecord(BaseModel):
     certification_standard: Optional[str] = None
     certified: Optional[bool] = None
     certifying_body: Optional[str] = None
+    minted_token_id: Optional[int] = None
+
+class MaterialMintRequest(BaseModel):
+    material_type: str
+    quantity_kg: float
+    metadata_uri: str
+
+class ProductComposeRequest(BaseModel):
+    consumed_token_ids: List[int]
+    consumed_amounts: List[int]
+    new_product_type: str
+    new_quantity: int
+    metadata_uri: str
 
 class CertificationRecord(BaseModel):
     product_id: str
