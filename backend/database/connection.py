@@ -5,6 +5,9 @@ Set DATABASE_URL in your .env or environment. The app will not start without it.
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 

@@ -77,27 +77,14 @@ export default function SessionBar() {
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs">
-      {error && <span className="text-red-500">{error}</span>}
-      <select
-        value={selectedDid}
-        onChange={e => setSelectedDid(e.target.value)}
-        className="border border-gray-200 rounded px-2 py-1 text-xs bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+    <div className="flex items-center gap-4">
+      {error && <span className="text-red-500 text-xs font-medium">{error}</span>}
+      <a
+        href="/login"
+        className="text-sm primary-gradient-bg text-white rounded-full px-5 py-2 hover:shadow-lg hover:shadow-indigo-500/30 transition-all font-semibold"
       >
-        {actors.map(a => (
-          <option key={a.did} value={a.did}>
-            {a.name} · {ROLE_LABELS[a.role] || a.role}
-          </option>
-        ))}
-      </select>
-      <button
-        onClick={handleLogin}
-        disabled={loading || !selectedDid}
-        className="text-xs bg-gray-800 text-white rounded px-3 py-1 hover:bg-gray-900 transition-colors disabled:opacity-50"
-      >
-        {loading ? 'Signing in…' : 'Sign in'}
-      </button>
-      <a href="/login" className="text-xs text-blue-600 hover:underline">Full sign-in →</a>
+        Sign in securely
+      </a>
     </div>
   )
 }

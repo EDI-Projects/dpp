@@ -554,6 +554,7 @@ def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):
             category=category, current_stage="Manufactured",
         )
         db.add(product)
+        db.flush()  # FK: FactoryProduct references products.product_id
         fp = FactoryProduct(os_id=os_id, product_id=product_id)
         db.add(fp)
         db.flush()

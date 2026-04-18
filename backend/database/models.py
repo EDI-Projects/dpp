@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime, Integer, BigInteger, Text, ForeignKey, Date, Index
-from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMPTZ
+from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMP
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
 import uuid
@@ -17,8 +17,8 @@ class Actor(Base):
     approved_by = Column(String(128))
     public_key_b64 = Column(Text, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class PendingRegistration(Base):
@@ -30,7 +30,7 @@ class PendingRegistration(Base):
     role = Column(String(64), nullable=False)
     email = Column(String(256))
     public_key_b64 = Column(Text, nullable=False)
-    submitted_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    submitted_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class AuthChallenge(Base):
@@ -38,8 +38,8 @@ class AuthChallenge(Base):
 
     nonce = Column(String(64), primary_key=True)
     did = Column(String(128), nullable=False, index=True)
-    expires_at = Column(TIMESTAMPTZ, nullable=False)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class AuthToken(Base):
@@ -47,8 +47,8 @@ class AuthToken(Base):
 
     token = Column(String(64), primary_key=True)
     did = Column(String(128), nullable=False, index=True)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
-    expires_at = Column(TIMESTAMPTZ)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(TIMESTAMP(timezone=True))
 
 
 class Product(Base):
@@ -59,8 +59,8 @@ class Product(Base):
     os_id = Column(String(128), nullable=False, index=True)
     category = Column(String(128))
     current_stage = Column(String(128))
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class LifecycleStage(Base):
@@ -74,7 +74,7 @@ class LifecycleStage(Base):
     issuer_name = Column(String(256))
     credential_id = Column(String(256), unique=True, nullable=False, index=True)
     vc_type = Column(String(128), nullable=False)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     vc_payload = Column(JSONB, nullable=False)
     # IPFS + Polygon anchoring (nullable for backward compat with pre-existing rows)
     ipfs_cid = Column(String(256), nullable=True)
@@ -90,11 +90,11 @@ class CredentialStatus(Base):
     vc_type = Column(String(128), nullable=False)
     status_index = Column(BigInteger, unique=True, nullable=False, index=True)
     is_revoked = Column(Boolean, nullable=False, default=False)
-    revoked_at = Column(TIMESTAMPTZ)
+    revoked_at = Column(TIMESTAMP(timezone=True))
     revoked_by = Column(String(128))
     revoked_tx_hash = Column(String(128), nullable=True)
     ipfs_cid = Column(String(256), nullable=True)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class StatusListBit(Base):
@@ -113,7 +113,7 @@ class StatusListMeta(Base):
     credential_id = Column(String(256), unique=True, nullable=False, index=True)
     product_id = Column(String(256), index=True)
     vc_type = Column(String(128), nullable=False)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class FactoryProduct(Base):
@@ -122,16 +122,16 @@ class FactoryProduct(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     os_id = Column(String(128), nullable=False, index=True)
     product_id = Column(String(256), ForeignKey("products.product_id"), nullable=False, index=True)
-    added_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    added_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class AuditLogEntry(Base):
     __tablename__ = "audit_log"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ts = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    ts = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     event = Column(String(128), nullable=False)
     actor_did = Column(String(128), index=True)
     product_id = Column(String(256), index=True)
     detail = Column(Text)
-    created_at = Column(TIMESTAMPTZ, nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

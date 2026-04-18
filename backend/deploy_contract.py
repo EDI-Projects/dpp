@@ -106,13 +106,16 @@ print("\nDeploying DPPAnchor contract...")
 contract = w3.eth.contract(abi=CONTRACT_ABI, bytecode=CONTRACT_BYTECODE)
 nonce = w3.eth.get_transaction_count(account.address)
 
-tx = contract.constructor().build_transaction({
+base_tx = {
     "from": account.address,
     "nonce": nonce,
-    "gas": 2_000_000,
     "gasPrice": w3.eth.gas_price,
     "chainId": w3.eth.chain_id,
-})
+}
+estimated_gas = w3.eth.estimate_gas(contract.constructor().build_transaction(base_tx))
+base_tx["gas"] = int(estimated_gas * 1.2) # Add 20% buffer
+
+tx = contract.constructor().build_transaction(base_tx)
 
 signed = account.sign_transaction(tx)
 tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)

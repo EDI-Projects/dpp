@@ -201,6 +201,8 @@ def _load_actors_from_db() -> None:
 
 
 def _bootstrap() -> None:
+    from database.connection import init_db
+    init_db()
     _seed_actors_to_db()
     _load_actors_from_db()
 

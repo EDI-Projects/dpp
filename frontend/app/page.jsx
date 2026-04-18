@@ -103,16 +103,10 @@ export default function FactoriesPage() {
             <p className="text-xs text-gray-400 font-mono">{f.os_id}</p>
             <div className="mt-auto pt-2 flex gap-2">
               <a
-                href={`/issue/${f.os_id}`}
-                className="flex-1 text-center text-xs bg-blue-600 text-white rounded px-3 py-1.5 hover:bg-blue-700 transition-colors"
-              >
-                Issue Birth Cert
-              </a>
-              <a
                 href={`/factory/${f.os_id}`}
-                className="flex-1 text-center text-xs bg-white text-gray-700 border border-gray-300 rounded px-3 py-1.5 hover:bg-gray-50 transition-colors"
+                className="flex-1 text-center text-sm font-semibold primary-gradient-bg text-white rounded-xl px-4 py-2 hover:shadow-lg transition-all"
               >
-                View Details
+                View Factory Registration
               </a>
             </div>
           </div>

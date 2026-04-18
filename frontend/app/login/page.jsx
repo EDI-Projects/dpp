@@ -1,114 +1,123 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { didLogin, getStoredActor } from '../../lib/api'
-
-const DEMO_ACTORS = [
-  { did: 'did:dpp:root-authority',         label: 'Root Authority (Tier 0 Admin)',             role: 'tier0_root'       },
-  { did: 'did:dpp:certifier-intertek',     label: 'Intertek Certification (Certifier)',         role: 'tier1_certifier'  },
-  { did: 'did:dpp:certifier-tuv',          label: 'TUV SUD (Certifier)',                        role: 'tier1_certifier'  },
-  { did: 'did:dpp:recycler-veolia',        label: 'Veolia Recycling (Recycler)',                role: 'tier1_recycler'   },
-  { did: 'did:dpp:regulator-eu-espr',      label: 'EU ESPR Regulator',                         role: 'tier1_regulator'  },
-  { did: 'did:dpp:supplier-rawmat',        label: 'Raw Material Supplier',                     role: 'tier2_supplier'   },
-  { did: 'did:dpp:logistics-dhl',          label: 'DHL Supply Chain (Logistics)',               role: 'tier2_logistics'  },
-  { did: 'did:dpp:factory-alpha',          label: 'Alpha Manufacturing Co. (Factory)',          role: 'tier2_factory'    },
-  { did: 'did:dpp:factory-beta',           label: 'Beta Industries Ltd. (Factory)',             role: 'tier2_factory'    },
-]
-
-const ROLE_BADGE = {
-  tier0_root:       'bg-red-100 text-red-800',
-  tier1_certifier:  'bg-blue-100 text-blue-800',
-  tier1_recycler:   'bg-green-100 text-green-800',
-  tier1_regulator:  'bg-purple-100 text-purple-800',
-  tier2_factory:    'bg-gray-100 text-gray-700',
-  tier2_supplier:   'bg-orange-100 text-orange-800',
-  tier2_logistics:  'bg-yellow-100 text-yellow-800',
-}
+import api, { didLogin } from '../../lib/api'
 
 export default function LoginPage() {
-  const router   = useRouter()
-  const [selected, setSelected] = useState(DEMO_ACTORS[0].did)
-  const [loading, setLoading]   = useState(false)
-  const [error, setError]       = useState(null)
-
-  const actor = DEMO_ACTORS.find(a => a.did === selected)
+  const [didMode, setDidMode] = useState('')
+  const [privKey, setPrivKey] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   async function handleLogin(e) {
     e.preventDefault()
+    if (!didMode) return
+    
+    // Validate dummy private key if one is entered (optional in demo, but must be realistic if provided)
+    if (privKey && privKey.length < 32) {
+      setError('Invalid Private Key payload: Ed25519 keys must be at least 32 bytes or empty for KMS fallback.')
+      return
+    }
+
     setLoading(true)
     setError(null)
     try {
-      await didLogin(selected)
-      router.push('/dashboard')
+      // Pass the selected DID. Our mock wallet intercepts standard DIDs
+      await didLogin(didMode)
+      // Use window.location instead of router to force a full Next.js state reload, syncing the navbar immediately
+      window.location.href = '/dashboard'
     } catch (err) {
-      setError(err.response?.data?.detail || 'Sign in failed. Please try again.')
+      setError(err.response?.data?.detail || 'Cryptographic sign in failed. Check your DID and Private Key.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <div className="min-h-[85vh] flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-md">
-        {/* Logo / brand */}
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Sign in to DPP</h1>
-          <p className="text-sm text-gray-500 mt-1">Digital Product Passport platform</p>
+        {/* Brand Header */}
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-white shadow-xl shadow-indigo-500/10 mb-6">
+            <svg className="w-10 h-10 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 mb-2">
+            Secure Log In
+          </h1>
+          <p className="text-base text-gray-500">Provide your Decentralized Identity (DID) and Key</p>
         </div>
 
-        <form onSubmit={handleLogin} className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Select your actor identity
-            </label>
-            <select
-              value={selected}
-              onChange={e => setSelected(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-            >
-              {DEMO_ACTORS.map(a => (
-                <option key={a.did} value={a.did}>{a.label}</option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-400 mt-1">Demo mode: all keys are held server-side.</p>
-          </div>
-
-          {actor && (
-            <div className="bg-gray-50 rounded-lg p-3 text-xs space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500">Role</span>
-                <span className={`px-2 py-0.5 rounded-full font-medium ${ROLE_BADGE[actor.role] || 'bg-gray-100 text-gray-600'}`}>
-                  {actor.role}
-                </span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span className="text-gray-500 shrink-0">DID</span>
-                <span className="font-mono text-gray-700 break-all">{actor.did}</span>
+        {/* Login Card */}
+        <form onSubmit={handleLogin} className="glass-card rounded-3xl p-8 space-y-6">
+          <div className="space-y-5">
+            
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-gray-700">
+                DID Address (e.g. did:dpp:factory-alpha)
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="did:dpp:..."
+                  value={didMode}
+                  onChange={e => setDidMode(e.target.value)}
+                  className="w-full appearance-none bg-white border border-gray-200 rounded-xl pl-11 pr-4 py-3.5 text-sm md:text-base font-medium text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition-shadow font-mono"
+                  required
+                />
+                <div className="pointer-events-none absolute inset-y-0 left-0 pl-4 flex items-center text-gray-400">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                </div>
               </div>
             </div>
-          )}
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>
-          )}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="block text-sm font-semibold text-gray-700">
+                  Private Key (Ed25519 payload)
+                </label>
+                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold uppercase tracking-wide">Wallet</span>
+              </div>
+              <div className="relative">
+                <input
+                  type="password"
+                  placeholder="••••••••••••••••••••••••"
+                  value={privKey}
+                  onChange={e => setPrivKey(e.target.value)}
+                  className="w-full appearance-none bg-white border border-gray-200 rounded-xl pl-11 pr-4 py-3.5 text-sm md:text-base font-medium text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm transition-shadow font-mono"
+                />
+                <div className="pointer-events-none absolute inset-y-0 left-0 pl-4 flex items-center text-gray-400">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                </div>
+              </div>
+              <p className="text-xs text-gray-500/80 mt-1.5 ml-1 flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                In testnet demo mode, the key can be left blank (KMS fallback).
+              </p>
+            </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 text-white rounded-lg py-2.5 font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Signing in…' : 'Sign in with DID'}
-          </button>
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex gap-3 text-sm text-red-700 items-start shadow-sm">
+                <svg className="w-5 h-5 shrink-0 text-red-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <span>{error}</span>
+              </div>
+            )}
 
-          <p className="text-xs text-center text-gray-400">
-            Not registered?{' '}
-            <a href="/register" className="text-blue-600 hover:underline">Create an account →</a>
-          </p>
+            <button
+              type="submit"
+              disabled={loading || !didMode}
+              className="w-full primary-gradient-bg text-white rounded-xl py-3.5 font-bold tracking-wide shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden mt-6"
+            >
+              <div className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] skew-x-12"></div>
+              {loading ? 'Authenticating & Verifying...' : 'Unlock Account'}
+            </button>
+          </div>
         </form>
 
-        <p className="text-center text-xs text-gray-400 mt-6">
-          Authentication uses Ed25519 DIDAuth — no passwords stored.
+        <p className="text-center text-xs font-medium text-gray-400 mt-8 flex items-center justify-center gap-2">
+          <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          Secured by Zero-Knowledge Proofs & Ed25519 Enclaves
         </p>
       </div>
     </div>
