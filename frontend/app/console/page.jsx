@@ -7,7 +7,7 @@ import api, { getStoredActor } from '../../lib/api'
 export default function SupplyChainConsole() {
   const router = useRouter()
   const [actor, setActor] = useState(null)
-  const [activeTab, setActiveTab] = useState('mint') // 'mint' or 'compose'
+  const [activeTab, setActiveTab] = useState('mint') // 'mint', 'compose', or 'lifecycle'
   
   // Mint state
   const [mintData, setMintData] = useState({ type: 'Organic Cotton', qty: 1000 })
@@ -20,6 +20,30 @@ export default function SupplyChainConsole() {
   const [composeData, setComposeData] = useState({ type: 'Cotton Fabric', qty: 500 })
   const [composeLoading, setComposeLoading] = useState(false)
   const [composeResult, setComposeResult] = useState(null)
+
+  // Lifecycle state (custody + ownership transfer)
+  const [selectedLifecycleTokenId, setSelectedLifecycleTokenId] = useState(null)
+  const [lifecycleLoading, setLifecycleLoading] = useState(false)
+  const [custodyResult, setCustodyResult] = useState(null)
+  const [ownershipResult, setOwnershipResult] = useState(null)
+  const [custodyData, setCustodyData] = useState({
+    product_id: '',
+    transfer_type: 'logistics',
+    from_owner_did: '',
+    to_owner_did: '',
+    from_actor_name: '',
+    to_actor_name: '',
+    handover_date: '',
+  })
+  const [ownershipData, setOwnershipData] = useState({
+    product_id: '',
+    previous_owner_did: '',
+    new_owner_did: '',
+    owner_type: 'individual',
+    ownership_start: '',
+    country_of_use: '',
+    product_still_in_use: true,
+  })
 
   useEffect(() => {
     const user = getStoredActor()
@@ -47,6 +71,16 @@ export default function SupplyChainConsole() {
         quantity_kg: Number(mintData.qty)
       })
       setMintResult(res.data)
+      setCustodyData(prev => ({
+        ...prev,
+        product_id: res.data.product_id || prev.product_id,
+        from_owner_did: actor.did,
+      }))
+      setOwnershipData(prev => ({
+        ...prev,
+        product_id: res.data.product_id || prev.product_id,
+        previous_owner_did: actor.did,
+      }))
       fetchTokens() // refresh available tokens for compose
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to mint')
@@ -68,12 +102,102 @@ export default function SupplyChainConsole() {
         consumed_amounts: selectedTokens.map(t => t.quantity) // Burning 100% of selected tokens for simplicity
       })
       setComposeResult(res.data)
+      setCustodyData(prev => ({
+        ...prev,
+        product_id: res.data.product_id || prev.product_id,
+        from_owner_did: actor.did,
+      }))
+      setOwnershipData(prev => ({
+        ...prev,
+        product_id: res.data.product_id || prev.product_id,
+        previous_owner_did: actor.did,
+      }))
       setSelectedTokens([])
       fetchTokens()
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to compose')
     } finally {
       setComposeLoading(false)
+    }
+  }
+
+  function handleSelectLifecycleToken(token) {
+    setSelectedLifecycleTokenId(token.token_id)
+    setCustodyData(prev => ({
+      ...prev,
+      product_id: token.product_id,
+      from_owner_did: token.owner_did || prev.from_owner_did,
+    }))
+    setOwnershipData(prev => ({
+      ...prev,
+      product_id: token.product_id,
+      previous_owner_did: token.owner_did || prev.previous_owner_did,
+    }))
+  }
+
+  async function handleCustodyTransfer(e) {
+    e.preventDefault()
+    if (!custodyData.product_id.trim()) return alert('Product ID is required for custody transfer')
+
+    setLifecycleLoading(true)
+    setOwnershipResult(null)
+    try {
+      const payload = {
+        product_id: custodyData.product_id.trim(),
+        transfer_type: custodyData.transfer_type || undefined,
+        from_owner_did: custodyData.from_owner_did.trim() || undefined,
+        to_owner_did: custodyData.to_owner_did.trim() || undefined,
+        from_actor_name: custodyData.from_actor_name.trim() || undefined,
+        to_actor_name: custodyData.to_actor_name.trim() || undefined,
+        handover_date: custodyData.handover_date || undefined,
+      }
+      const res = await api.post('/add-lifecycle-stage/custody-transfer', payload)
+      setCustodyResult(res.data)
+      if (res.data?.active_owner_did) {
+        setOwnershipData(prev => ({
+          ...prev,
+          product_id: payload.product_id,
+          previous_owner_did: res.data.active_owner_did,
+        }))
+      }
+      fetchTokens()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to issue custody transfer')
+    } finally {
+      setLifecycleLoading(false)
+    }
+  }
+
+  async function handleOwnershipTransfer(e) {
+    e.preventDefault()
+    if (!ownershipData.product_id.trim()) return alert('Product ID is required for ownership update')
+
+    setLifecycleLoading(true)
+    setCustodyResult(null)
+    try {
+      const payload = {
+        product_id: ownershipData.product_id.trim(),
+        previous_owner_did: ownershipData.previous_owner_did.trim() || undefined,
+        new_owner_did: ownershipData.new_owner_did.trim() || undefined,
+        owner_type: ownershipData.owner_type || undefined,
+        ownership_start: ownershipData.ownership_start || undefined,
+        country_of_use: ownershipData.country_of_use.trim() || undefined,
+        product_still_in_use: ownershipData.product_still_in_use,
+      }
+      const res = await api.post('/add-lifecycle-stage/ownership', payload)
+      setOwnershipResult(res.data)
+      if (res.data?.active_owner_did) {
+        setCustodyData(prev => ({
+          ...prev,
+          product_id: payload.product_id,
+          from_owner_did: res.data.active_owner_did,
+        }))
+      }
+      fetchTokens()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to issue ownership update')
+    } finally {
+      setLifecycleLoading(false)
     }
   }
 
@@ -99,6 +223,16 @@ export default function SupplyChainConsole() {
           className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'compose' ? 'bg-purple-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
         >
           2. Assemble / Compose
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('lifecycle')
+            setCustodyResult(null)
+            setOwnershipResult(null)
+          }}
+          className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'lifecycle' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+        >
+          3. Transfer / Ownership
         </button>
       </div>
 
@@ -267,6 +401,231 @@ export default function SupplyChainConsole() {
               </a>
             </div>
           )}
+        </div>
+      )}
+
+      {/* LIFECYCLE UI */}
+      {activeTab === 'lifecycle' && (
+        <div className="animate-fade-in stagger-1">
+          <div className="mb-6 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+            <p className="text-sm text-emerald-100">
+              Record real-world handoffs after mint/compose. If you provide <span className="font-mono">to_owner_did</span> or <span className="font-mono">new_owner_did</span>,
+              the backend also updates active token ownership state.
+            </p>
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-6">
+            <div className="glass-card p-5 rounded-2xl border border-emerald-500/20">
+              <h3 className="text-white font-bold mb-3">Active Tokens</h3>
+              <p className="text-xs text-slate-400 mb-4">Pick one to auto-fill Product ID and current owner.</p>
+              <div className="space-y-2 max-h-130 overflow-y-auto pr-1">
+                {availableTokens.length === 0 ? (
+                  <p className="text-sm text-slate-500">No active tokens found.</p>
+                ) : (
+                  availableTokens.map(token => {
+                    const selected = selectedLifecycleTokenId === token.token_id
+                    return (
+                      <button
+                        key={token.token_id}
+                        type="button"
+                        onClick={() => handleSelectLifecycleToken(token)}
+                        className={`w-full text-left rounded-xl p-3 border transition-colors ${selected ? 'border-emerald-400/70 bg-emerald-500/10' : 'border-slate-700/60 hover:border-slate-500'}`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-semibold text-slate-200 truncate">{token.material_type}</span>
+                          <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">#{token.token_id}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate">{token.product_id}</div>
+                        <div className="text-[11px] text-slate-400 truncate">Owner: {token.owner_did}</div>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 space-y-6">
+              <form onSubmit={handleCustodyTransfer} className="glass-card p-6 rounded-2xl border border-cyan-500/20">
+                <h3 className="text-lg font-bold text-cyan-300 mb-4">Custody Transfer Credential</h3>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Product ID</label>
+                    <input
+                      type="text"
+                      value={custodyData.product_id}
+                      onChange={e => setCustodyData({ ...custodyData, product_id: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="urn:product:..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">From Owner DID</label>
+                    <input
+                      type="text"
+                      value={custodyData.from_owner_did}
+                      onChange={e => setCustodyData({ ...custodyData, from_owner_did: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="did:ethr:0x..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">To Owner DID</label>
+                    <input
+                      type="text"
+                      value={custodyData.to_owner_did}
+                      onChange={e => setCustodyData({ ...custodyData, to_owner_did: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="did:ethr:0x..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Transfer Type</label>
+                    <select
+                      value={custodyData.transfer_type}
+                      onChange={e => setCustodyData({ ...custodyData, transfer_type: e.target.value })}
+                      className="input-dark"
+                    >
+                      <option value="logistics">logistics</option>
+                      <option value="warehouse">warehouse</option>
+                      <option value="retail-distribution">retail-distribution</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Handover Date</label>
+                    <input
+                      type="datetime-local"
+                      value={custodyData.handover_date}
+                      onChange={e => setCustodyData({ ...custodyData, handover_date: e.target.value })}
+                      className="input-dark"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">From Actor Name</label>
+                    <input
+                      type="text"
+                      value={custodyData.from_actor_name}
+                      onChange={e => setCustodyData({ ...custodyData, from_actor_name: e.target.value })}
+                      className="input-dark"
+                      placeholder="Factory Alpha"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">To Actor Name</label>
+                    <input
+                      type="text"
+                      value={custodyData.to_actor_name}
+                      onChange={e => setCustodyData({ ...custodyData, to_actor_name: e.target.value })}
+                      className="input-dark"
+                      placeholder="Regional Warehouse"
+                    />
+                  </div>
+                </div>
+                <button type="submit" disabled={lifecycleLoading} className="btn-primary w-full mt-5 py-3">
+                  {lifecycleLoading ? 'Issuing Custody Credential...' : 'Issue Custody Transfer'}
+                </button>
+              </form>
+
+              {custodyResult && (
+                <div className="glass p-4 rounded-xl border border-cyan-500/30">
+                  <h4 className="text-cyan-300 font-semibold mb-2">Custody Transfer Recorded</h4>
+                  <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                    <div className="text-slate-400">Credential</div><div className="text-cyan-200 text-right truncate" title={custodyResult.credential?.id}>{custodyResult.credential?.id}</div>
+                    <div className="text-slate-400">Owner Updated</div><div className="text-cyan-200 text-right">{String(custodyResult.owner_updated)}</div>
+                    <div className="text-slate-400">Active Owner</div><div className="text-cyan-200 text-right truncate" title={custodyResult.active_owner_did}>{custodyResult.active_owner_did || 'n/a'}</div>
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handleOwnershipTransfer} className="glass-card p-6 rounded-2xl border border-amber-500/20">
+                <h3 className="text-lg font-bold text-amber-300 mb-4">Ownership Credential</h3>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Product ID</label>
+                    <input
+                      type="text"
+                      value={ownershipData.product_id}
+                      onChange={e => setOwnershipData({ ...ownershipData, product_id: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="urn:product:..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Previous Owner DID</label>
+                    <input
+                      type="text"
+                      value={ownershipData.previous_owner_did}
+                      onChange={e => setOwnershipData({ ...ownershipData, previous_owner_did: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="did:ethr:0x..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">New Owner DID</label>
+                    <input
+                      type="text"
+                      value={ownershipData.new_owner_did}
+                      onChange={e => setOwnershipData({ ...ownershipData, new_owner_did: e.target.value })}
+                      className="input-dark font-mono text-xs"
+                      placeholder="did:ethr:0x..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Owner Type</label>
+                    <select
+                      value={ownershipData.owner_type}
+                      onChange={e => setOwnershipData({ ...ownershipData, owner_type: e.target.value })}
+                      className="input-dark"
+                    >
+                      <option value="individual">individual</option>
+                      <option value="enterprise">enterprise</option>
+                      <option value="retail">retail</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Ownership Start</label>
+                    <input
+                      type="datetime-local"
+                      value={ownershipData.ownership_start}
+                      onChange={e => setOwnershipData({ ...ownershipData, ownership_start: e.target.value })}
+                      className="input-dark"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Country Of Use</label>
+                    <input
+                      type="text"
+                      value={ownershipData.country_of_use}
+                      onChange={e => setOwnershipData({ ...ownershipData, country_of_use: e.target.value })}
+                      className="input-dark"
+                      placeholder="DE"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 mt-7">
+                    <input
+                      type="checkbox"
+                      checked={ownershipData.product_still_in_use}
+                      onChange={e => setOwnershipData({ ...ownershipData, product_still_in_use: e.target.checked })}
+                    />
+                    Product still in active use
+                  </label>
+                </div>
+                <button type="submit" disabled={lifecycleLoading} className="btn-primary w-full mt-5 py-3" style={{ backgroundImage: 'linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)' }}>
+                  {lifecycleLoading ? 'Issuing Ownership Credential...' : 'Issue Ownership Update'}
+                </button>
+              </form>
+
+              {ownershipResult && (
+                <div className="glass p-4 rounded-xl border border-amber-500/30">
+                  <h4 className="text-amber-300 font-semibold mb-2">Ownership Update Recorded</h4>
+                  <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                    <div className="text-slate-400">Credential</div><div className="text-amber-200 text-right truncate" title={ownershipResult.credential?.id}>{ownershipResult.credential?.id}</div>
+                    <div className="text-slate-400">Owner Updated</div><div className="text-amber-200 text-right">{String(ownershipResult.owner_updated)}</div>
+                    <div className="text-slate-400">Active Owner</div><div className="text-amber-200 text-right truncate" title={ownershipResult.active_owner_did}>{ownershipResult.active_owner_did || 'n/a'}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
