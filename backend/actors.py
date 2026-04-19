@@ -54,8 +54,10 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "CustodyTransferCredential",
         "OwnershipCredential",
         "RepairCredential",
+        "RawMaterialCredential",
+        "ProductCompositionCredential",
     ],
-    TIER2_SUPPLIER:  ["MaterialSourcingCredential"],
+    TIER2_SUPPLIER:  ["MaterialSourcingCredential", "RawMaterialCredential"],
     TIER2_LOGISTICS: ["CustodyTransferCredential"],
 }
 

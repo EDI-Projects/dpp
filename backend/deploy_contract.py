@@ -8,6 +8,7 @@ Requires POLYGON_RPC_URL and POLYGON_PRIVATE_KEY in .env
 Outputs the contract address to set as POLYGON_CONTRACT_ADDRESS.
 """
 
+from web3 import Web3
 import os
 import json
 import sys
@@ -15,14 +16,14 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-POLYGON_RPC_URL = os.getenv("POLYGON_RPC_URL", "https://rpc-amoy.polygon.technology")
+POLYGON_RPC_URL = os.getenv(
+    "POLYGON_RPC_URL", "https://rpc-amoy.polygon.technology")
 POLYGON_PRIVATE_KEY = os.getenv("POLYGON_PRIVATE_KEY", "")
 
 if not POLYGON_PRIVATE_KEY:
     print("ERROR: POLYGON_PRIVATE_KEY not set in .env")
     sys.exit(1)
 
-from web3 import Web3
 
 w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL))
 if not w3.is_connected():
@@ -38,8 +39,10 @@ if balance == 0:
     print("ERROR: Account has no MATIC. Get testnet MATIC from https://faucet.polygon.technology/")
     sys.exit(1)
 
-abi_path = os.path.join(os.path.dirname(__file__), "contracts/build/MaterialComposition_sol_MaterialComposition.abi")
-bin_path = os.path.join(os.path.dirname(__file__), "contracts/build/MaterialComposition_sol_MaterialComposition.bin")
+abi_path = os.path.join(os.path.dirname(
+    __file__), "contracts/build/MaterialComposition_sol_MaterialComposition.abi")
+bin_path = os.path.join(os.path.dirname(
+    __file__), "contracts/build/MaterialComposition_sol_MaterialComposition.bin")
 
 try:
     with open(abi_path, "r") as f:
@@ -75,12 +78,11 @@ receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
 if receipt.status == 1:
     contract_address = receipt.contractAddress
-    print(f"\n✅ Contract deployed successfully!")
+    print(f"\nContract deployed successfully!")
     print(f"   Address: {contract_address}")
     print(f"   Tx hash: {tx_hash.hex()}")
     print(f"\nAdd this to your .env:")
     print(f"   POLYGON_CONTRACT_ADDRESS={contract_address}")
 else:
-    print(f"\n❌ Deployment failed. Tx hash: {tx_hash.hex()}")
+    print(f"\nDeployment failed. Tx hash: {tx_hash.hex()}")
     sys.exit(1)
-

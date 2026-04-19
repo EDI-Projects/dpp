@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session
 from database.connection import get_db, init_db, SessionLocal
 from database.models import (
     Product, LifecycleStage, FactoryProduct, AuditLogEntry,
-    CredentialStatus, StatusListMeta, AuthToken,
+    CredentialStatus, StatusListMeta, AuthToken, MaterialToken,
 )
 
 app = FastAPI(title="Digital Product Passport API", version="3.0.0")
@@ -529,9 +529,23 @@ def api_mint_raw_material(record: MaterialMintRequest, _actor=Depends(require_au
         db.add(product)
         db.flush()
         
+        # Write DAG node (leaf — no parents)
+        dag_node = MaterialToken(
+            token_id=token_id,
+            product_id=product_id,
+            material_type=record.material_type,
+            quantity=int(record.quantity_kg),
+            owner_did=_actor.did,
+            tx_hash=tx_hash,
+            parent_token_ids=[],
+            metadata_uri=record.metadata_uri,
+            is_burned=False,
+        )
+        db.add(dag_node)
+        
         ipfs_cid, _ = _save_stage(
             db, product_id, "Raw Material Minted", subject["mint_date"],
-            _actor.did, "Raw Material Origin", vc["id"],
+            _actor.did, _actor.name, vc["id"],
             "RawMaterialCredential", vc, "Minted")
     finally:
         db.close()
@@ -541,6 +555,18 @@ def api_mint_raw_material(record: MaterialMintRequest, _actor=Depends(require_au
 
 @app.post("/compose-product")
 def api_compose_product(record: ProductComposeRequest, _actor=Depends(require_auth)):
+    # Validate that all consumed tokens exist and are not already burned
+    db = SessionLocal()
+    try:
+        for tid in record.consumed_token_ids:
+            parent = db.query(MaterialToken).filter(MaterialToken.token_id == tid).first()
+            if not parent:
+                raise HTTPException(404, detail=f"Token {tid} not found in the DAG.")
+            if parent.is_burned:
+                raise HTTPException(400, detail=f"Token {tid} has already been consumed.")
+    finally:
+        db.close()
+
     token_id, tx_hash = polygon.compose_material(
         record.consumed_token_ids, 
         record.consumed_amounts, 
@@ -569,15 +595,114 @@ def api_compose_product(record: ProductComposeRequest, _actor=Depends(require_au
         db.add(product)
         db.flush()
         
+        # Write DAG node (internal — has parents)
+        dag_node = MaterialToken(
+            token_id=token_id,
+            product_id=product_id,
+            material_type=record.new_product_type,
+            quantity=record.new_quantity,
+            owner_did=_actor.did,
+            tx_hash=tx_hash,
+            parent_token_ids=record.consumed_token_ids,
+            metadata_uri=record.metadata_uri,
+            is_burned=False,
+        )
+        db.add(dag_node)
+        
+        # Mark consumed tokens as burned
+        for tid in record.consumed_token_ids:
+            db.query(MaterialToken).filter(MaterialToken.token_id == tid).update({"is_burned": True})
+        
         ipfs_cid, _ = _save_stage(
             db, product_id, "Product Composed", subject["compose_date"],
-            _actor.did, "Manufacturer", vc["id"],
+            _actor.did, _actor.name, vc["id"],
             "ProductCompositionCredential", vc, "Composed")
     finally:
         db.close()
         
     _log("PRODUCT_COMPOSED", _actor.did, f"Token {token_id}", product_id)
     return {"product_id": product_id, "token_id": token_id, "credential": vc, "tx_hash": tx_hash}
+
+
+@app.get("/product/{product_id:path}/provenance-tree")
+def get_provenance_tree(product_id: str):
+    """Recursively trace backward through the composition DAG from a product to all its raw material origins."""
+    db = SessionLocal()
+    try:
+        token = db.query(MaterialToken).filter(MaterialToken.product_id == product_id).first()
+        if not token:
+            raise HTTPException(404, detail="No material token found for this product.")
+        
+        def _build_tree(tok: MaterialToken, depth: int = 0) -> dict:
+            node = {
+                "token_id": tok.token_id,
+                "product_id": tok.product_id,
+                "material_type": tok.material_type,
+                "quantity": tok.quantity,
+                "owner_did": tok.owner_did,
+                "tx_hash": tok.tx_hash,
+                "metadata_uri": tok.metadata_uri,
+                "is_burned": tok.is_burned,
+                "is_raw_material": not tok.parent_token_ids,
+                "created_at": tok.created_at.isoformat() if tok.created_at else None,
+                "children": [],
+            }
+            if tok.parent_token_ids and depth < 10:
+                for parent_id in tok.parent_token_ids:
+                    parent = db.query(MaterialToken).filter(MaterialToken.token_id == parent_id).first()
+                    if parent:
+                        node["children"].append(_build_tree(parent, depth + 1))
+            return node
+        
+        tree = _build_tree(token)
+        
+        # Collect all raw materials (leaf nodes)
+        raw_materials = []
+        def _collect_leaves(n):
+            if n["is_raw_material"]:
+                raw_materials.append({
+                    "token_id": n["token_id"],
+                    "material_type": n["material_type"],
+                    "quantity": n["quantity"],
+                    "owner_did": n["owner_did"],
+                })
+            for child in n.get("children", []):
+                _collect_leaves(child)
+        _collect_leaves(tree)
+        
+        return {
+            "product_id": product_id,
+            "tree": tree,
+            "raw_materials": raw_materials,
+            "total_depth": _max_depth(tree),
+        }
+    finally:
+        db.close()
+
+
+def _max_depth(node: dict) -> int:
+    if not node.get("children"):
+        return 0
+    return 1 + max(_max_depth(c) for c in node["children"])
+
+
+@app.get("/material-tokens")
+def list_material_tokens():
+    """List all material tokens in the DAG (for the compose UI to pick from)."""
+    db = SessionLocal()
+    try:
+        tokens = db.query(MaterialToken).filter(MaterialToken.is_burned == False).all()
+        return [{
+            "token_id": t.token_id,
+            "product_id": t.product_id,
+            "material_type": t.material_type,
+            "quantity": t.quantity,
+            "owner_did": t.owner_did,
+            "is_raw_material": not t.parent_token_ids,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        } for t in tokens]
+    finally:
+        db.close()
 
 @app.post("/issue-birth-certificate/{os_id}")
 def issue_birth_certificate(os_id: str, _actor=Depends(require_auth)):

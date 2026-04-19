@@ -135,3 +135,26 @@ class AuditLogEntry(Base):
     product_id = Column(String(256), index=True)
     detail = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class MaterialToken(Base):
+    """Tracks the ERC-1155 composition DAG.
+    
+    Each row represents one token (raw material or composed product).
+    parent_token_ids stores the list of token IDs that were burned to create this one.
+    If parent_token_ids is empty/null, this is a raw material (leaf node in the DAG).
+    """
+    __tablename__ = "material_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_id = Column(Integer, unique=True, nullable=False, index=True)
+    product_id = Column(String(256), ForeignKey("products.product_id"), nullable=False, index=True)
+    material_type = Column(String(128), nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+    owner_did = Column(String(128), nullable=False, index=True)
+    tx_hash = Column(String(128), nullable=True)
+    parent_token_ids = Column(JSONB, nullable=True, default=list)  # [] = raw material, [1,2,3] = composed from tokens 1,2,3
+    metadata_uri = Column(Text, nullable=True)
+    is_burned = Column(Boolean, nullable=False, default=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+

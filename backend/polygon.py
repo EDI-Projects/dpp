@@ -148,5 +148,30 @@ def compose_material(burned_ids: list[int], burned_amounts: list[int], new_amoun
     import random
     return random.randint(1000, 9999), None
 
+def anchor_credential(credential_id: str, ipfs_cid: str, vc_type: str) -> Optional[str]:
+    """Anchor a credential's IPFS CID on Polygon. Returns tx hash or None."""
+    if not ENABLED:
+        return None
+    # Not implemented for MaterialComposition contract — legacy DPPAnchor removed
+    logger.info(f"anchor_credential skipped (no DPPAnchor): {credential_id}")
+    return None
+
+
+def anchor_revocation(credential_id: str, reason: str = "Revoked") -> Optional[str]:
+    """Record a credential revocation on Polygon. Returns tx hash or None."""
+    if not ENABLED:
+        return None
+    logger.info(f"anchor_revocation skipped (no DPPAnchor): {credential_id}")
+    return None
+
+
+def verify_anchor(credential_id: str) -> Optional[dict]:
+    """Read on-chain anchor for a credential. Returns anchor data or None."""
+    if not ENABLED:
+        return None
+    logger.info(f"verify_anchor skipped (no DPPAnchor): {credential_id}")
+    return None
+
+
 def is_available() -> bool:
     return ENABLED

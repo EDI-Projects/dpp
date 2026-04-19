@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import api from '../../lib/api'
+import Link from 'next/link'
 
 const ROLES = [
   { value: 'factory',   label: 'Factory / Manufacturer',   tier: 2, desc: 'Issue product birth certificates, handle custody transfers and repairs.' },
@@ -180,18 +181,18 @@ export default function RegisterPage() {
               </div>
               <div className="flex gap-3">
                 {result.status === 'active' && result.token && (
-                  <a href="/dashboard"
+                  <Link href="/explorer"
                     onClick={() => {
                       localStorage.setItem('dpp_token', result.token)
                       localStorage.setItem('dpp_actor', JSON.stringify(result.actor))
                     }}
                     className="flex-1 bg-blue-600 text-white rounded-lg py-2.5 text-sm font-medium text-center hover:bg-blue-700">
-                    Go to dashboard →
-                  </a>
+                    Go to console →
+                  </Link>
                 )}
-                <a href="/" className="flex-1 border border-gray-300 rounded-lg py-2.5 text-sm text-center hover:bg-gray-50">
+                <Link href="/" className="flex-1 border border-gray-300 rounded-lg py-2.5 text-sm text-center hover:bg-gray-50">
                   Back to home
-                </a>
+                </Link>
               </div>
             </div>
           )}
