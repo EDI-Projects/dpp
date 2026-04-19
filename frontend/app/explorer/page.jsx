@@ -12,6 +12,7 @@ function ExplorerContent() {
   
   const [productId, setProductId] = useState(initialId)
   const [data, setData] = useState(null)
+  const [aggregationData, setAggregationData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -29,11 +30,17 @@ function ExplorerContent() {
     setLoading(true)
     setError(null)
     setData(null)
+    setAggregationData(null)
 
     try {
-      // Get the provenance tree
-      const res = await api.get(`/product/${encodeURIComponent(id)}/provenance-tree`)
-      setData(res.data)
+      const encoded = encodeURIComponent(id)
+      const [treeRes, aggregationRes] = await Promise.all([
+        api.get(`/product/${encoded}/provenance-tree`),
+        api.get(`/product/${encoded}/lineage-aggregation`),
+      ])
+
+      setData(treeRes.data)
+      setAggregationData(aggregationRes.data)
     } catch (err) {
       if (err.response?.status === 404) {
         setError('No composition DAG found for this Material/Product ID.')
@@ -199,6 +206,45 @@ function ExplorerContent() {
               </div>
             </div>
           </div>
+
+          {aggregationData && (
+            <div className="glass p-6 rounded-2xl mb-8 border border-cyan-500/20">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h3 className="text-white font-bold">Lineage Aggregation</h3>
+                <span className="text-xs text-cyan-300 font-semibold uppercase tracking-wider">Paper Metrics</span>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-4 mb-5">
+                <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+                  <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Credentials</p>
+                  <p className="text-2xl font-black text-white">{aggregationData.credential_inheritance?.credentials_total ?? 0}</p>
+                  <p className="text-xs text-slate-500 mt-1">Revoked: {aggregationData.credential_inheritance?.revoked_credentials ?? 0}</p>
+                </div>
+                <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+                  <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Anchoring Coverage</p>
+                  <p className="text-sm text-slate-200">IPFS: <span className="text-cyan-300 font-bold">{aggregationData.credential_inheritance?.ipfs_anchored_credentials ?? 0}</span></p>
+                  <p className="text-sm text-slate-200">Polygon: <span className="text-blue-300 font-bold">{aggregationData.credential_inheritance?.tx_anchored_credentials ?? 0}</span></p>
+                </div>
+                <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+                  <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Ownership View</p>
+                  <p className="text-sm text-slate-200">Owners: <span className="text-emerald-300 font-bold">{aggregationData.ownership_view?.owners_total ?? 0}</span></p>
+                  <p className="text-xs text-slate-500 mt-1">{aggregationData.ownership_view?.is_redacted ? 'owner refs redacted for viewer' : 'owner refs fully visible'}</p>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-bold text-slate-300 mb-2">Material Breakdown</h4>
+                <div className="grid md:grid-cols-2 gap-2">
+                  {(aggregationData.summary?.material_breakdown || []).slice(0, 6).map((row) => (
+                    <div key={row.material_type} className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 flex items-center justify-between text-sm">
+                      <span className="text-slate-300">{row.material_type}</span>
+                      <span className="text-slate-400">{row.token_count} tokens | <span className="text-white">{row.quantity_total}</span></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="bg-[#0f172a]/50 p-6 rounded-3xl border border-slate-800 backdrop-blur overflow-x-auto">
             <div className="min-w-150 -ml-8">

@@ -12,11 +12,18 @@ export default function ProductHistoryPage() {
   const [productId, setProductId] = useState('')
   const [tokens, setTokens] = useState([])
   const [tokensLoading, setTokensLoading] = useState(true)
+  const [statusEntries, setStatusEntries] = useState([])
+  const [statusLoading, setStatusLoading] = useState(true)
 
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(null)
   const [historyData, setHistoryData] = useState(null)
   const [verifyData, setVerifyData] = useState(null)
+
+  const [credentialLookupId, setCredentialLookupId] = useState('')
+  const [credentialLookupLoading, setCredentialLookupLoading] = useState(false)
+  const [credentialLookupError, setCredentialLookupError] = useState(null)
+  const [credentialLookupResult, setCredentialLookupResult] = useState(null)
 
   const uniqueProducts = useMemo(() => {
     const seen = new Set()
@@ -39,23 +46,50 @@ export default function ProductHistoryPage() {
     return map
   }, [verifyData])
 
+  const statusSnapshot = useMemo(() => {
+    const total = statusEntries.length
+    const revoked = statusEntries.filter((entry) => entry.revoked).length
+    return {
+      total,
+      revoked,
+      active: total - revoked,
+    }
+  }, [statusEntries])
+
   useEffect(() => {
     let cancelled = false
 
     async function fetchPublicLedger() {
       setTokensLoading(true)
+      setStatusLoading(true)
       try {
-        const { data } = await api.get('/public/ledger/tokens?limit=200')
+        const [ledgerResult, statusResult] = await Promise.allSettled([
+          api.get('/public/ledger/tokens?limit=200'),
+          api.get('/status-list/entries'),
+        ])
+
         if (!cancelled) {
-          setTokens(data?.tokens || [])
+          if (ledgerResult.status === 'fulfilled') {
+            setTokens(ledgerResult.value.data?.tokens || [])
+          } else {
+            setTokens([])
+          }
+
+          if (statusResult.status === 'fulfilled') {
+            setStatusEntries(Array.isArray(statusResult.value.data) ? statusResult.value.data : [])
+          } else {
+            setStatusEntries([])
+          }
         }
       } catch {
         if (!cancelled) {
           setTokens([])
+          setStatusEntries([])
         }
       } finally {
         if (!cancelled) {
           setTokensLoading(false)
+          setStatusLoading(false)
         }
       }
     }
@@ -76,6 +110,8 @@ export default function ProductHistoryPage() {
     setHistoryData(null)
     setVerifyData(null)
     setProductId(trimmed)
+    setCredentialLookupError(null)
+    setCredentialLookupResult(null)
 
     try {
       const encoded = encodeURIComponent(trimmed)
@@ -96,6 +132,26 @@ export default function ProductHistoryPage() {
   function handleSubmit(event) {
     event.preventDefault()
     loadProductHistory(productId)
+  }
+
+  async function lookupCredentialStatus(rawCredentialId) {
+    const trimmed = (rawCredentialId || credentialLookupId || '').trim()
+    if (!trimmed) return
+
+    setCredentialLookupId(trimmed)
+    setCredentialLookupLoading(true)
+    setCredentialLookupError(null)
+    setCredentialLookupResult(null)
+
+    try {
+      const encoded = encodeURIComponent(trimmed)
+      const { data } = await api.get(`/credentials/${encoded}/status`)
+      setCredentialLookupResult(data)
+    } catch (err) {
+      setCredentialLookupError(err.response?.data?.detail || 'Credential status lookup failed.')
+    } finally {
+      setCredentialLookupLoading(false)
+    }
   }
 
   return (
@@ -125,6 +181,25 @@ export default function ProductHistoryPage() {
           Public fields are visible by design. Avoid storing raw secrets in VC payloads pinned to IPFS.
         </p>
       </form>
+
+      <div className="grid md:grid-cols-4 gap-4 mb-8">
+        <div className="glass-card rounded-xl border border-slate-700/60 p-4">
+          <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Status Entries</p>
+          <p className="text-2xl font-black text-white">{statusLoading ? '...' : statusSnapshot.total}</p>
+        </div>
+        <div className="glass-card rounded-xl border border-slate-700/60 p-4">
+          <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Active</p>
+          <p className="text-2xl font-black text-emerald-400">{statusLoading ? '...' : statusSnapshot.active}</p>
+        </div>
+        <div className="glass-card rounded-xl border border-slate-700/60 p-4">
+          <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Revoked</p>
+          <p className="text-2xl font-black text-amber-400">{statusLoading ? '...' : statusSnapshot.revoked}</p>
+        </div>
+        <div className="glass-card rounded-xl border border-slate-700/60 p-4 flex flex-col justify-between">
+          <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Status List VC</p>
+          <a href={`${api.defaults.baseURL}/status-list`} target="_blank" rel="noreferrer" className="text-cyan-300 text-sm font-semibold hover:text-cyan-200 transition-colors">Open /status-list</a>
+        </div>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         <section className="glass-card rounded-2xl border border-slate-700/60 p-5 lg:col-span-1">
@@ -165,6 +240,51 @@ export default function ProductHistoryPage() {
         </section>
 
         <section className="lg:col-span-2 space-y-5">
+          <div className="glass-card rounded-2xl border border-indigo-500/20 p-5">
+            <h3 className="text-lg font-bold text-indigo-300 mb-3">Credential Status Lookup</h3>
+            <form
+              className="flex flex-col md:flex-row gap-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                lookupCredentialStatus(credentialLookupId)
+              }}
+            >
+              <input
+                type="text"
+                value={credentialLookupId}
+                onChange={(event) => setCredentialLookupId(event.target.value)}
+                placeholder="urn:credential:..."
+                className="input-dark flex-1 font-mono text-xs"
+              />
+              <button type="submit" className="btn-primary px-5" disabled={credentialLookupLoading}>
+                {credentialLookupLoading ? 'Checking...' : 'Check /credentials/{id}/status'}
+              </button>
+            </form>
+
+            {credentialLookupError && (
+              <p className="mt-3 text-sm text-red-300">{credentialLookupError}</p>
+            )}
+
+            {credentialLookupResult && (
+              <div className="mt-4 grid md:grid-cols-3 gap-3 text-sm">
+                <div className="bg-slate-900/40 border border-slate-700/60 rounded-lg p-3">
+                  <p className="text-xs text-slate-500 mb-1">Credential ID</p>
+                  <p className="text-slate-200 font-mono break-all">{credentialLookupResult.credential_id}</p>
+                </div>
+                <div className="bg-slate-900/40 border border-slate-700/60 rounded-lg p-3">
+                  <p className="text-xs text-slate-500 mb-1">Status Index</p>
+                  <p className="text-white font-bold">{credentialLookupResult.status_index}</p>
+                </div>
+                <div className="bg-slate-900/40 border border-slate-700/60 rounded-lg p-3">
+                  <p className="text-xs text-slate-500 mb-1">Revoked</p>
+                  <p className={`font-bold ${credentialLookupResult.revoked ? 'text-amber-300' : 'text-emerald-300'}`}>
+                    {String(credentialLookupResult.revoked)}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           {!historyData && !historyLoading && !historyError && (
             <div className="glass-card rounded-2xl border border-dashed border-slate-700/60 p-10 text-center">
               <p className="text-slate-400">Select a product from the ledger or paste a product ID to view its VC timeline.</p>
@@ -255,6 +375,15 @@ export default function ProductHistoryPage() {
                           >
                             Polygon Tx: {truncateMiddle(entry.tx_hash, 12, 8)}
                           </a>
+                        )}
+                        {entry.credential_id && (
+                          <button
+                            type="button"
+                            onClick={() => lookupCredentialStatus(entry.credential_id)}
+                            className="px-3 py-1.5 rounded-lg border border-indigo-500/40 text-indigo-300 hover:text-indigo-200 hover:bg-indigo-500/10 transition-colors"
+                          >
+                            Check Credential Status
+                          </button>
                         )}
                       </div>
 
