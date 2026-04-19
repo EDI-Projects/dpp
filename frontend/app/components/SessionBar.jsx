@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ethers } from 'ethers'
-import api, { getStoredActor, setStoredToken, clearStoredToken } from '../../lib/api'
+import { getStoredActor, loginWithWallet, clearStoredToken } from '../../lib/api'
 
 export default function SessionBar() {
   const [address, setAddress] = useState(null)
@@ -17,14 +17,22 @@ export default function SessionBar() {
     }
     
     // Listen for account changes
+    const onAccountsChanged = (accounts) => {
+      if (accounts.length === 0) {
+        handleLogout()
+      } else if (address && accounts[0].toLowerCase() !== address.toLowerCase()) {
+        handleLogout() // Force re-login on account switch
+      }
+    }
+
     if (typeof window !== 'undefined' && window.ethereum) {
-      window.ethereum.on('accountsChanged', (accounts) => {
-        if (accounts.length === 0) {
-          handleLogout()
-        } else if (address && accounts[0].toLowerCase() !== address.toLowerCase()) {
-          handleLogout() // Force re-login on account switch
-        }
-      })
+      window.ethereum.on('accountsChanged', onAccountsChanged)
+    }
+
+    return () => {
+      if (typeof window !== 'undefined' && window.ethereum) {
+        window.ethereum.removeListener('accountsChanged', onAccountsChanged)
+      }
     }
   }, [address])
 
@@ -42,20 +50,10 @@ export default function SessionBar() {
       const provider = new ethers.BrowserProvider(window.ethereum)
       const signer = await provider.getSigner()
       const userAddress = await signer.getAddress()
-      
-      const did = `did:ethr:${userAddress}`
-      
-      // 2. Request SIWE Challenge (or just auth implicitly for demo)
-      // Since changing backend extensively for SIWE is Phase 1b, we'll hit an endpoint
-      // that registers/authenticates the Web3 address directly for now.
-      const res = await api.post('/auth/metamask', { address: userAddress })
-      
-      setStoredToken(res.data.access_token, {
-        did: did,
-        name: `${userAddress.substring(0, 6)}...${userAddress.substring(38)}`,
-        role: 'tier2_factory', // Default
-        tier: 2
-      })
+      const network = await provider.getNetwork()
+
+      // 2. Sign backend challenge and exchange for bearer token.
+      await loginWithWallet(signer, Number(network.chainId || 80002))
       
       setAddress(userAddress)
       window.location.reload()

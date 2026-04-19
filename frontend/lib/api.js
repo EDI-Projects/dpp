@@ -39,10 +39,21 @@ export function clearStoredToken() {
   localStorage.removeItem('dpp_actor')
 }
 
-export async function didLogin(did) {
-  const { data: { challenge } } = await api.post('/auth/challenge', { did })
-  const { data: { signature } } = await api.post('/auth/sign', { did, challenge })
-  const { data } = await api.post('/auth/verify', { did, challenge, signature })
+export async function loginWithWallet(signer, chainId = 80002) {
+  const address = await signer.getAddress()
+  const { data: challenge } = await api.post('/auth/siwe/challenge', {
+    address,
+    chain_id: chainId,
+  })
+
+  const signature = await signer.signMessage(challenge.message)
+  const { data } = await api.post('/auth/siwe/verify', {
+    address,
+    nonce: challenge.nonce,
+    signature,
+    chain_id: challenge.chain_id,
+  })
+
   setStoredToken(data.token, data.actor)
   return data
 }

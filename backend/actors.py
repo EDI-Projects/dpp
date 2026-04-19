@@ -11,11 +11,12 @@ refreshed on startup and mutated on register/revoke.
 
 from __future__ import annotations
 import base64
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -38,10 +39,11 @@ TIER1_REGULATOR  = "tier1_regulator"
 TIER2_FACTORY    = "tier2_factory"
 TIER2_SUPPLIER   = "tier2_supplier"
 TIER2_LOGISTICS  = "tier2_logistics"
+TIER2_OBSERVER   = "tier2_observer"
 
 ALL_ROLES = [
     TIER0_ROOT, TIER1_CERTIFIER, TIER1_RECYCLER, TIER1_REGULATOR,
-    TIER2_FACTORY, TIER2_SUPPLIER, TIER2_LOGISTICS,
+    TIER2_FACTORY, TIER2_SUPPLIER, TIER2_LOGISTICS, TIER2_OBSERVER,
 ]
 
 ROLE_PERMISSIONS: dict[str, list[str]] = {
@@ -59,13 +61,50 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     ],
     TIER2_SUPPLIER:  ["MaterialSourcingCredential", "RawMaterialCredential"],
     TIER2_LOGISTICS: ["CustodyTransferCredential"],
+    TIER2_OBSERVER:  [],
 }
 
 TIER_LEVEL: dict[str, int] = {
     TIER0_ROOT: 0,
     TIER1_CERTIFIER: 1, TIER1_RECYCLER: 1, TIER1_REGULATOR: 1,
-    TIER2_FACTORY: 2, TIER2_SUPPLIER: 2, TIER2_LOGISTICS: 2,
+    TIER2_FACTORY: 2, TIER2_SUPPLIER: 2, TIER2_LOGISTICS: 2, TIER2_OBSERVER: 2,
 }
+
+
+def _normalize_evm_address(address: str) -> str:
+    normalized = (address or "").strip().lower()
+    if normalized.startswith("0x") and len(normalized) == 42:
+        return normalized
+    return ""
+
+
+def _allowlist_from_env(env_var: str) -> set[str]:
+    raw = os.getenv(env_var, "")
+    out: set[str] = set()
+    for item in raw.split(","):
+        normalized = _normalize_evm_address(item)
+        if normalized:
+            out.add(normalized)
+    return out
+
+
+WEB3_FACTORY_ALLOWLIST = _allowlist_from_env("WEB3_FACTORY_ALLOWLIST")
+WEB3_SUPPLIER_ALLOWLIST = _allowlist_from_env("WEB3_SUPPLIER_ALLOWLIST")
+WEB3_LOGISTICS_ALLOWLIST = _allowlist_from_env("WEB3_LOGISTICS_ALLOWLIST")
+
+_WEB3_DEFAULT_ROLE_RAW = os.getenv("WEB3_DEFAULT_ROLE", TIER2_OBSERVER).strip()
+WEB3_DEFAULT_ROLE = _WEB3_DEFAULT_ROLE_RAW if _WEB3_DEFAULT_ROLE_RAW in ROLE_PERMISSIONS else TIER2_OBSERVER
+
+
+def _resolve_web3_role(address: str) -> str:
+    normalized = _normalize_evm_address(address)
+    if normalized in WEB3_FACTORY_ALLOWLIST:
+        return TIER2_FACTORY
+    if normalized in WEB3_SUPPLIER_ALLOWLIST:
+        return TIER2_SUPPLIER
+    if normalized in WEB3_LOGISTICS_ALLOWLIST:
+        return TIER2_LOGISTICS
+    return WEB3_DEFAULT_ROLE
 
 
 # ── Actor dataclass (in-process representation) ─────────────────────────────
@@ -193,11 +232,22 @@ def _load_actors_from_db() -> None:
     db = SessionLocal()
     try:
         db_actors = db.query(ActorModel).filter(ActorModel.is_active == True).all()
+        roles_changed = False
         for db_actor in db_actors:
+            if db_actor.did.startswith("did:ethr:"):
+                address = db_actor.did.split(":")[-1]
+                desired_role = _resolve_web3_role(address)
+                if db_actor.role != desired_role:
+                    db_actor.role = desired_role
+                    roles_changed = True
+
             if db_actor.did not in ACTOR_REGISTRY:
                 # Generate new key (demo mode — in production keys come from HSM/wallet)
                 actor = _new_actor(db_actor.did, db_actor.name, db_actor.role, db_actor.approved_by)
                 ACTOR_REGISTRY[db_actor.did] = actor
+
+        if roles_changed:
+            db.commit()
     finally:
         db.close()
 
@@ -213,6 +263,80 @@ _bootstrap()
 
 
 # ── Actor lookup ─────────────────────────────────────────────────────────────
+
+def get_or_create_web3_actor(address: str) -> Actor:
+    normalized_address = _normalize_evm_address(address)
+    if not normalized_address:
+        raise ValueError("Invalid EVM address")
+
+    did = f"did:ethr:{normalized_address}"
+    desired_role = _resolve_web3_role(normalized_address)
+
+    if did in ACTOR_REGISTRY:
+        actor = ACTOR_REGISTRY[did]
+        if actor.role != desired_role:
+            actor.role = desired_role
+            db = SessionLocal()
+            try:
+                db.query(ActorModel).filter(ActorModel.did == did).update({"role": desired_role})
+                db.commit()
+            finally:
+                db.close()
+        return actor
+
+    # Create new actor in DB and registry
+    name = f"Web3 Actor ({normalized_address[:6]}...)"
+    db = SessionLocal()
+    try:
+        db_actor = db.query(ActorModel).filter(ActorModel.did == did).first()
+        if db_actor:
+            if db_actor.role != desired_role:
+                db_actor.role = desired_role
+                db.commit()
+
+            actor = _new_actor(
+                did,
+                db_actor.name or name,
+                db_actor.role,
+                db_actor.approved_by,
+            )
+            ACTOR_REGISTRY[did] = actor
+            return actor
+
+        actor = _new_actor(did, name, desired_role)
+        db_actor = ActorModel(
+            did=did,
+            name=name,
+            role=desired_role,
+            approved_by=_ROOT_DID,
+            public_key_b64=actor.public_key_b64,
+        )
+        db.add(db_actor)
+        db.commit()
+        ACTOR_REGISTRY[did] = actor
+        return actor
+    finally:
+        db.close()
+
+
+def create_auth_token_for_actor(did: str) -> str:
+    """Create a new session token for the actor."""
+    db = SessionLocal()
+    try:
+        token = secrets.token_hex(32)
+        now = datetime.now(timezone.utc)
+        auth_token = AuthToken(
+            token=token,
+            did=did,
+            # Keep sessions finite to reduce replay risk if a token leaks.
+            expires_at=now + timedelta(hours=12),
+        )
+        db.add(auth_token)
+        db.commit()
+        return token
+    finally:
+        db.close()
+
 
 def get_or_create_factory_actor(os_id: str, name: str = "") -> Actor:
     did = f"did:dpp:{os_id.lower()}"
@@ -324,6 +448,10 @@ def resolve_token(token: str) -> Optional[Actor]:
     try:
         db_token = db.query(AuthToken).filter(AuthToken.token == token).first()
         if db_token:
+            if db_token.expires_at and db_token.expires_at < datetime.now(timezone.utc):
+                db.delete(db_token)
+                db.commit()
+                return None
             return get_actor(db_token.did)
         return None
     finally:

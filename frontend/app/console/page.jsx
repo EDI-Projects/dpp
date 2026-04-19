@@ -10,24 +10,24 @@ export default function SupplyChainConsole() {
   const [activeTab, setActiveTab] = useState('mint') // 'mint' or 'compose'
   
   // Mint state
-  const [mintData, setMintData] = useState({ type: 'Organic Cotton', qty: 1000, uri: 'ipfs://' })
+  const [mintData, setMintData] = useState({ type: 'Organic Cotton', qty: 1000 })
   const [mintLoading, setMintLoading] = useState(false)
   const [mintResult, setMintResult] = useState(null)
   
   // Compose state
   const [availableTokens, setAvailableTokens] = useState([])
   const [selectedTokens, setSelectedTokens] = useState([])
-  const [composeData, setComposeData] = useState({ type: 'Cotton Fabric', qty: 500, uri: 'ipfs://' })
+  const [composeData, setComposeData] = useState({ type: 'Cotton Fabric', qty: 500 })
   const [composeLoading, setComposeLoading] = useState(false)
   const [composeResult, setComposeResult] = useState(null)
 
   useEffect(() => {
     const user = getStoredActor()
-    if (!user) router.push('/login')
+    if (!user) router.push('/')
     else setActor(user)
     
     fetchTokens()
-  }, [])
+  }, [router])
 
   async function fetchTokens() {
     try {
@@ -44,8 +44,7 @@ export default function SupplyChainConsole() {
     try {
       const res = await api.post('/mint-raw-material', {
         material_type: mintData.type,
-        quantity_kg: Number(mintData.qty),
-        metadata_uri: mintData.uri
+        quantity_kg: Number(mintData.qty)
       })
       setMintResult(res.data)
       fetchTokens() // refresh available tokens for compose
@@ -66,8 +65,7 @@ export default function SupplyChainConsole() {
         new_product_type: composeData.type,
         new_quantity: Number(composeData.qty),
         consumed_token_ids: selectedTokens.map(t => t.token_id),
-        consumed_amounts: selectedTokens.map(t => t.quantity), // Burning 100% of selected tokens for simplicity
-        metadata_uri: composeData.uri
+        consumed_amounts: selectedTokens.map(t => t.quantity) // Burning 100% of selected tokens for simplicity
       })
       setComposeResult(res.data)
       setSelectedTokens([])
@@ -126,14 +124,17 @@ export default function SupplyChainConsole() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Quantity (units/kg)</label>
-                <input type="number" min="1" value={mintData.qty} onChange={e => setMintData({...mintData, qty: e.target.value})} className="input-dark" />
+                <input type="number" min="1" value={mintData.qty} onChange={e => setMintData({...mintData, qty: e.target.value})} className="input-dark" suppressHydrationWarning />
               </div>
             </div>
             
-            <div className="mb-8">
-              <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">ESG Metadata URI</label>
-              <input type="text" value={mintData.uri} onChange={e => setMintData({...mintData, uri: e.target.value})} className="input-dark font-mono text-sm" />
-              <p className="text-xs text-slate-500 mt-2">Attach IPFS URI containing origin certs (e.g., Fairtrade). The VC payload gets anchored to this token.</p>
+            <div className="mb-8 rounded-xl border border-blue-500/20 bg-blue-500/10 p-4">
+              <p className="text-sm text-blue-200">
+                VC metadata is now generated and uploaded to Pinata IPFS automatically at mint time.
+              </p>
+              <p className="text-xs text-blue-300/80 mt-1">
+                The resulting ipfs://CID is used as the token metadata URI on Polygon.
+              </p>
             </div>
 
             <button type="submit" disabled={mintLoading} className="btn-primary w-full py-4 text-lg">
@@ -150,6 +151,19 @@ export default function SupplyChainConsole() {
               <div className="grid grid-cols-2 gap-4 text-sm font-mono bg-slate-900/50 p-4 rounded-xl">
                 <div className="text-slate-500">Token ID</div><div className="text-white text-right">{mintResult.token_id}</div>
                 <div className="text-slate-500">Product URN</div><div className="text-emerald-300 text-right text-xs truncate" title={mintResult.product_id}>{mintResult.product_id}</div>
+                <div className="text-slate-500">IPFS CID</div><div className="text-emerald-300 text-right text-xs truncate" title={mintResult.ipfs_cid}>{mintResult.ipfs_cid}</div>
+              </div>
+              <div className="mt-4 flex gap-3 text-xs font-semibold">
+                {mintResult.tx_hash && (
+                  <a href={`https://amoy.polygonscan.com/tx/${mintResult.tx_hash}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">
+                    View Polygon Tx
+                  </a>
+                )}
+                {mintResult.metadata_uri && (
+                  <a href={mintResult.metadata_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')} target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300">
+                    View IPFS VC
+                  </a>
+                )}
               </div>
             </div>
           )}
@@ -164,7 +178,7 @@ export default function SupplyChainConsole() {
             {/* Left Col: Token Selection */}
             <div>
               <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">Select Inputs to BURN</h2>
-              <div className="space-y-3 h-[400px] overflow-y-auto pr-2">
+              <div className="space-y-3 h-100 overflow-y-auto pr-2">
                 {availableTokens.length === 0 ? (
                   <p className="text-slate-500 text-sm">No live tokens available to burn. Mint some first.</p>
                 ) : (
@@ -200,11 +214,11 @@ export default function SupplyChainConsole() {
                   <div className="space-y-5 mb-8">
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">New Product Type</label>
-                      <input type="text" value={composeData.type} onChange={e => setComposeData({...composeData, type: e.target.value})} className="input-dark" />
+                      <input type="text" value={composeData.type} onChange={e => setComposeData({...composeData, type: e.target.value})} className="input-dark" suppressHydrationWarning />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">New Quantity (units)</label>
-                      <input type="number" min="1" value={composeData.qty} onChange={e => setComposeData({...composeData, qty: e.target.value})} className="input-dark" />
+                      <input type="number" min="1" value={composeData.qty} onChange={e => setComposeData({...composeData, qty: e.target.value})} className="input-dark" suppressHydrationWarning />
                     </div>
                   </div>
                 </div>
@@ -234,6 +248,19 @@ export default function SupplyChainConsole() {
               <div className="grid grid-cols-2 gap-4 text-sm font-mono bg-slate-900/50 p-4 rounded-xl mb-4">
                 <div className="text-slate-500">New Token ID</div><div className="text-white text-right">{composeResult.token_id}</div>
                 <div className="text-slate-500">Product URN</div><div className="text-purple-300 text-right text-xs truncate" title={composeResult.product_id}>{composeResult.product_id}</div>
+                <div className="text-slate-500">IPFS CID</div><div className="text-purple-300 text-right text-xs truncate" title={composeResult.ipfs_cid}>{composeResult.ipfs_cid}</div>
+              </div>
+              <div className="mb-4 flex gap-3 text-xs font-semibold">
+                {composeResult.tx_hash && (
+                  <a href={`https://amoy.polygonscan.com/tx/${composeResult.tx_hash}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">
+                    View Polygon Tx
+                  </a>
+                )}
+                {composeResult.metadata_uri && (
+                  <a href={composeResult.metadata_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')} target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300">
+                    View IPFS VC
+                  </a>
+                )}
               </div>
               <a href={`/explorer?id=${encodeURIComponent(composeResult.product_id)}`} className="text-center block w-full py-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 rounded-lg text-sm font-bold transition-colors">
                 View DAG in Provenance Explorer →

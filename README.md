@@ -16,6 +16,65 @@ Existing DPP systems often rely on centralized databases or flat placeholders. O
 
 ---
 
+## How To Explain This Without Blockchain Jargon
+
+Think of this system as a tamper-evident "manufacturing ledger" for product passports:
+
+1.  **Minting a token = registering a real-world batch**
+	- Example: a batch of cotton, recycled polyester, or lithium ore is onboarded with quantity and compliance metadata.
+2.  **Composing a token = recording transformation in production**
+	- Example: multiple input batches are consumed to create a new output batch (fabric, battery module, finished good).
+3.  **Credentials = digital compliance documents**
+	- Certifications, custody transfers, ownership updates, repairs, and end-of-life events are attached as auditable records.
+4.  **Provenance tree = traceability graph**
+	- You can trace a final product backwards to all source batches and related compliance claims.
+
+In plain terms: this is a digital chain-of-custody + bill-of-materials audit system that is hard to tamper with.
+
+---
+
+## Real-World Industry Fit
+
+- **Textiles and Apparel**: fiber origin, dye/processing chain, recycled-content claims.
+- **Battery and EV Supply Chains**: mineral origin, processing stages, assembly lineage.
+- **Food and Agriculture**: lot tracing, custody handoffs, certification references.
+- **Pharma and Regulated Manufacturing**: batch genealogy, handling records, compliance events.
+- **Consumer Electronics**: component composition traceability and repair/reuse lifecycle tracking.
+
+The current prototype is material-agnostic in backend APIs; "cotton" is just one UI preset, not a hard-coded limitation.
+
+---
+
+## Role Governance (Prototype Policy)
+
+To avoid "everyone can mint/compose", wallet roles are policy-driven:
+
+- `WEB3_DEFAULT_ROLE=tier2_observer` (no issuance permissions)
+- `WEB3_FACTORY_ALLOWLIST` controls who can mint/compose
+- `WEB3_SUPPLIER_ALLOWLIST` and `WEB3_LOGISTICS_ALLOWLIST` enable narrower permissions
+
+This makes demos closer to real enterprise governance while keeping setup simple.
+
+### Who Is This For (In Operations Terms)
+
+- **Suppliers / Extractors**: mint raw-material batches as traceable digital records.
+- **Factories / Assemblers**: compose input batches into higher-level products.
+- **Logistics Operators**: record custody handovers during transport.
+- **Brands / Retail / Asset Owners**: record ownership changes during distribution or usage.
+- **Certifiers / Regulators**: issue and verify compliance credentials.
+
+### Who Mints, Who Composes, Who Transfers
+
+- **Mint (`/mint-raw-material`)**: factory/supplier-authorized wallets only.
+- **Compose (`/compose-product`)**: factory-authorized wallets with ownership checks on consumed tokens.
+- **Further transfers**:
+	- `POST /add-lifecycle-stage/custody-transfer` can also update active token owner when `to_owner_did` is supplied.
+	- `POST /add-lifecycle-stage/ownership` can also update active token owner when `new_owner_did` is supplied.
+
+This gives you both an auditable event trail and an evolving current-owner state in the ledger model.
+
+---
+
 ## Application Structure
 
 The frontend is designed for industrial visualization and academic demonstration:
@@ -41,6 +100,7 @@ The administrative interface for authorized actors.
 
 -   **Blockchain**: Polygon Amoy Testnet (ERC-1155 standard).
 -   **Storage**: IPFS (via Pinata) for decentralized Verifiable Credential persistence.
+-   **VC Format on IPFS**: JSON-LD credential files (`application/vc+ld+json`, `.vc.jsonld`) with fallback to JSON pinning.
 -   **Backend**: FastAPI (Python 3.13) + SQLAlchemy + PostgreSQL.
 -   **Frontend**: Next.js 16 + React 19 + TailwindCSS 4.
 -   **Identity**: Web3 Wallet (MetaMask) using Ethers.js.
@@ -90,6 +150,19 @@ This repository serves as a reference implementation for research focused on:
 -   **Composite Digital Twins (CDTs)** in Supply Chain 4.0.
 -   **Verifiable Credential Inheritance** across token-burning transformations.
 -   **On-chain DAG models** for Bill-of-Materials (BOM) auditability.
+
+### Paper-Facing API Endpoints
+
+Use these endpoints to generate publication artifacts and quantitative evidence:
+
+- `GET /product/{product_id}/provenance-tree`
+	- Recursive lineage tree with token ancestry and IPFS/tx references.
+- `GET /product/{product_id}/lineage-aggregation`
+	- Aggregated material inheritance metrics, VC-type breakdown, trust-signal rollups, and ESG-related summary fields.
+- `GET /public/ledger/tokens`
+	- Public ledger-style token view with redacted owner references.
+
+These endpoints are designed to support reproducible screenshots/tables for research sections on provenance depth, credential inheritance coverage, and supply-chain transparency.
 
 ---
 

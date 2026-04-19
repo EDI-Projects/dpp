@@ -79,7 +79,7 @@ function ExplorerContent() {
                 <span className="bg-slate-800/80 px-2 py-1 rounded text-slate-300 border border-slate-700/50">
                   ID: {node.token_id}
                 </span>
-                <span className="truncate max-w-[200px]" title={node.product_id}>{node.product_id}</span>
+                <span className="truncate max-w-50" title={node.product_id}>{node.product_id}</span>
               </div>
             </div>
             
@@ -94,7 +94,7 @@ function ExplorerContent() {
           </div>
 
           {/* Links Row */}
-          {(node.tx_hash || node.metadata_uri) && (
+          {(node.tx_hash || node.metadata_uri || node.ipfs_cid) && (
             <div className="mt-4 pt-3 border-t border-slate-700/50 flex gap-4 text-xs font-semibold">
               {node.tx_hash && (
                 <a href={`https://amoy.polygonscan.com/tx/${node.tx_hash}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors">
@@ -108,6 +108,18 @@ function ExplorerContent() {
                   Compliance VC (IPFS)
                 </a>
               )}
+              {node.ipfs_cid && (
+                <a href={`https://ipfs.io/ipfs/${node.ipfs_cid}`} target="_blank" rel="noreferrer" className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 transition-colors">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h8m-8 4h6" /></svg>
+                  Pinned Credential
+                </a>
+              )}
+            </div>
+          )}
+
+          {node.credential_id && (
+            <div className="mt-3 text-xs text-slate-400 font-mono break-all">
+              Credential: {node.credential_id}
             </div>
           )}
         </div>
@@ -189,7 +201,7 @@ function ExplorerContent() {
           </div>
 
           <div className="bg-[#0f172a]/50 p-6 rounded-3xl border border-slate-800 backdrop-blur overflow-x-auto">
-            <div className="min-w-[600px] -ml-8">
+            <div className="min-w-150 -ml-8">
               <TreeNode node={data.tree} isRoot={true} />
             </div>
           </div>

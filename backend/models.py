@@ -33,14 +33,14 @@ class MaterialSourcingRecord(BaseModel):
 class MaterialMintRequest(BaseModel):
     material_type: str
     quantity_kg: float
-    metadata_uri: str
+    metadata_uri: Optional[str] = None
 
 class ProductComposeRequest(BaseModel):
     consumed_token_ids: List[int]
     consumed_amounts: List[int]
     new_product_type: str
     new_quantity: int
-    metadata_uri: str
+    metadata_uri: Optional[str] = None
 
 class CertificationRecord(BaseModel):
     product_id: str
@@ -58,6 +58,8 @@ class CustodyTransfer(BaseModel):
     issuer_did: Optional[str] = None
     transfer_sequence: Optional[int] = None    # auto-assigned by backend
     transfer_type: Optional[str] = "logistics"
+    from_owner_did: Optional[str] = None
+    to_owner_did: Optional[str] = None
     from_actor_name: Optional[str] = None
     from_city: Optional[str] = None
     to_actor_name: Optional[str] = None
@@ -72,6 +74,8 @@ class CustodyTransfer(BaseModel):
 class OwnershipRecord(BaseModel):
     product_id: str
     issuer_did: Optional[str] = None
+    previous_owner_did: Optional[str] = None
+    new_owner_did: Optional[str] = None
     owner_type: Optional[str] = "individual"
     ownership_start: Optional[str] = None
     country_of_use: Optional[str] = None

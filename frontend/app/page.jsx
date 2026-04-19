@@ -1,11 +1,58 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import api, { getStoredActor } from '../lib/api'
 
 export default function LandingPage() {
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState('')
+  const [liveStatus, setLiveStatus] = useState(null)
+  const [liveError, setLiveError] = useState(null)
+  const [walletDid] = useState(() => {
+    const actor = getStoredActor()
+    return actor?.did?.startsWith('did:ethr:') ? actor.did : null
+  })
+  const [walletChainId, setWalletChainId] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchLiveStatus() {
+      try {
+        const { data } = await api.get('/system/live-status')
+        if (!cancelled) {
+          setLiveStatus(data)
+          setLiveError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLiveError(err.response?.data?.detail || 'Live status unavailable')
+        }
+      }
+    }
+
+    fetchLiveStatus()
+    const timer = setInterval(fetchLiveStatus, 15000)
+
+    if (typeof window !== 'undefined' && window.ethereum) {
+      window.ethereum.request({ method: 'eth_chainId' })
+        .then((hex) => {
+          const parsed = Number.parseInt(String(hex), 16)
+          if (!Number.isNaN(parsed)) {
+            setWalletChainId(parsed)
+          }
+        })
+        .catch(() => {
+          setWalletChainId(null)
+        })
+    }
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
 
   function handleSearch(e) {
     e.preventDefault()
@@ -36,7 +83,7 @@ export default function LandingPage() {
           
           {/* Search Bar */}
           <form onSubmit={handleSearch} className="max-w-2xl mx-auto relative group">
-            <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+            <div className="absolute -inset-1 bg-linear-to-r from-blue-500 to-purple-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
             <div className="relative flex items-center glass rounded-xl p-2 gap-2">
               <div className="pl-4 text-slate-400">
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -49,6 +96,7 @@ export default function LandingPage() {
                 className="flex-1 bg-transparent border-none text-white focus:ring-0 text-lg placeholder-slate-500 outline-none"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                suppressHydrationWarning
               />
               <button type="submit" className="btn-primary py-3 px-6 text-lg">
                 Trace Origin
@@ -57,8 +105,82 @@ export default function LandingPage() {
           </form>
         </div>
 
+        {/* Live Status Panel */}
+        <div className="glass-card rounded-2xl p-6 mb-10 border border-cyan-500/20 animate-fade-in-up stagger-2">
+          <div className="flex items-center justify-between gap-4 mb-5">
+            <h2 className="text-xl font-bold text-white">Live Web3 Runtime</h2>
+            <span className="text-xs font-semibold uppercase tracking-wider text-cyan-300 bg-cyan-500/10 border border-cyan-500/30 px-2 py-1 rounded">
+              Real-Time
+            </span>
+          </div>
+
+          {liveError && (
+            <div className="mb-4 text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+              {liveError}
+            </div>
+          )}
+
+          <div className="grid md:grid-cols-3 gap-4 text-sm">
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Auth</p>
+              <p className="text-white font-semibold">{liveStatus?.auth?.mode || 'wallet-siwe'}</p>
+              <p className="text-slate-500 text-xs mt-2">Expected Chain ID: {liveStatus?.auth?.chain_id ?? 80002}</p>
+            </div>
+
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Wallet Session</p>
+              <p className="text-white font-semibold font-mono text-xs break-all" suppressHydrationWarning>{walletDid || 'Not connected'}</p>
+              <p className="text-slate-500 text-xs mt-2">Current Chain: {walletChainId || 'unknown'}</p>
+            </div>
+
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Integrations</p>
+              <p className="text-white font-semibold">Pinata: {liveStatus?.integrations?.ipfs_pinata ? 'online' : 'offline'}</p>
+              <p className="text-white font-semibold">Polygon: {liveStatus?.integrations?.polygon_amoy ? 'online' : 'offline'}</p>
+            </div>
+
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Ledger</p>
+              <p className="text-white font-semibold">Products: {liveStatus?.ledger?.total_products ?? 0}</p>
+              <p className="text-white font-semibold">Active Tokens: {liveStatus?.ledger?.active_tokens ?? 0}</p>
+            </div>
+
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Latest Polygon Tx</p>
+              {liveStatus?.ledger?.latest_tx_hash ? (
+                <a
+                  href={`https://amoy.polygonscan.com/tx/${liveStatus.ledger.latest_tx_hash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-300 hover:text-blue-200 font-mono text-xs break-all"
+                >
+                  {liveStatus.ledger.latest_tx_hash}
+                </a>
+              ) : (
+                <p className="text-slate-500 text-xs">No confirmed tx yet</p>
+              )}
+            </div>
+
+            <div className="bg-slate-900/40 rounded-xl p-4 border border-slate-700/60">
+              <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Latest IPFS CID</p>
+              {liveStatus?.latest_credential?.ipfs_cid ? (
+                <a
+                  href={`https://ipfs.io/ipfs/${liveStatus.latest_credential.ipfs_cid}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-300 hover:text-emerald-200 font-mono text-xs break-all"
+                >
+                  {liveStatus.latest_credential.ipfs_cid}
+                </a>
+              ) : (
+                <p className="text-slate-500 text-xs">No credential pinned yet</p>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Feature Grid */}
-        <div className="grid md:grid-cols-3 gap-6 mb-20 animate-fade-in-up stagger-2">
+        <div className="grid md:grid-cols-3 gap-6 mb-20 animate-fade-in-up stagger-3">
           <div className="glass-card p-6 border-t-blue-500/30 rounded-2xl">
             <div className="w-12 h-12 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center mb-4">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
