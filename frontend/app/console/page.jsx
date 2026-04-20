@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import api, { getStoredActor } from '../../lib/api'
+import api, { getStoredActor, getStoredToken, clearStoredToken, formatApiError, API_BASE_URL } from '../../lib/api'
 
 export default function SupplyChainConsole() {
   const router = useRouter()
   const [actor, setActor] = useState(null)
+  const [apiError, setApiError] = useState(null)
   const [activeTab, setActiveTab] = useState('mint') // 'mint', 'compose', or 'lifecycle'
   
   // Mint state
@@ -47,8 +48,15 @@ export default function SupplyChainConsole() {
 
   useEffect(() => {
     const user = getStoredActor()
-    if (!user) router.push('/')
-    else setActor(user)
+    const token = getStoredToken()
+
+    if (!user || !token) {
+      clearStoredToken()
+      router.push('/')
+      return
+    }
+
+    setActor(user)
     
     fetchTokens()
   }, [router])
@@ -57,8 +65,17 @@ export default function SupplyChainConsole() {
     try {
       const res = await api.get('/material-tokens')
       setAvailableTokens(res.data)
+      setApiError(null)
     } catch(err) {
       console.error(err)
+
+      if (err?.response?.status === 401 || err?.response?.status === 403) {
+        setApiError('Your session is invalid or expired. Please reconnect your wallet to continue.')
+        clearStoredToken()
+        return
+      }
+
+      setApiError(formatApiError(err, 'Failed to load material tokens.'))
     }
   }
 
@@ -83,7 +100,7 @@ export default function SupplyChainConsole() {
       }))
       fetchTokens() // refresh available tokens for compose
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to mint')
+      alert(formatApiError(err, 'Failed to mint'))
     } finally {
       setMintLoading(false)
     }
@@ -115,7 +132,7 @@ export default function SupplyChainConsole() {
       setSelectedTokens([])
       fetchTokens()
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to compose')
+      alert(formatApiError(err, 'Failed to compose'))
     } finally {
       setComposeLoading(false)
     }
@@ -162,7 +179,7 @@ export default function SupplyChainConsole() {
       }
       fetchTokens()
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to issue custody transfer')
+      alert(formatApiError(err, 'Failed to issue custody transfer'))
     } finally {
       setLifecycleLoading(false)
     }
@@ -195,7 +212,7 @@ export default function SupplyChainConsole() {
       }
       fetchTokens()
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to issue ownership update')
+      alert(formatApiError(err, 'Failed to issue ownership update'))
     } finally {
       setLifecycleLoading(false)
     }
@@ -209,6 +226,29 @@ export default function SupplyChainConsole() {
         <h1 className="text-3xl font-extrabold text-white mb-2">Supply Chain Console</h1>
         <p className="text-slate-400">Perform on-chain material transformations. You are logged in as {actor.name}.</p>
       </div>
+
+      {apiError && (
+        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+          <p className="text-sm text-red-200 mb-2">{apiError}</p>
+          <p className="text-xs text-red-300/90 mb-3">Backend API URL: <span className="font-mono">{API_BASE_URL}</span></p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={fetchTokens}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-red-500/20 text-red-100 border border-red-500/40 hover:bg-red-500/30 transition-colors"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/')}
+              className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-700/50 text-slate-200 border border-slate-600/60 hover:bg-slate-700 transition-colors"
+            >
+              Go To Login
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 mb-8 bg-[#0f172a]/50 p-1 rounded-xl w-max">

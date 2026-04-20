@@ -1,8 +1,24 @@
 import axios from 'axios'
 
+function resolveApiBaseUrl() {
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) {
+    return process.env.NEXT_PUBLIC_API_BASE_URL
+  }
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location
+    return `${protocol}//${hostname}:8000`
+  }
+
+  return 'http://localhost:8000'
+}
+
+export const API_BASE_URL = resolveApiBaseUrl()
+
 const api = axios.create({
-  baseURL: 'http://localhost:8000',
+  baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
+  timeout: 20000,
 })
 
 api.interceptors.request.use(config => {
@@ -37,6 +53,21 @@ export function setStoredToken(token, actor) {
 export function clearStoredToken() {
   localStorage.removeItem('dpp_token')
   localStorage.removeItem('dpp_actor')
+}
+
+export function getStoredToken() {
+  if (typeof window === 'undefined') return null
+  return localStorage.getItem('dpp_token')
+}
+
+export function formatApiError(err, fallback = 'Request failed') {
+  if (err?.code === 'ERR_NETWORK') {
+    return `Cannot reach backend API at ${API_BASE_URL}. Start backend server or set NEXT_PUBLIC_API_BASE_URL.`
+  }
+  if (err?.code === 'ECONNABORTED') {
+    return 'API request timed out. Please retry.'
+  }
+  return err?.response?.data?.detail || fallback
 }
 
 export async function loginWithWallet(signer, chainId = 80002) {
