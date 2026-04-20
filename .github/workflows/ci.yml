@@ -51,4 +51,4 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
-        run: npm run build -- --no-lint
+        run: npm run build --no-lint
